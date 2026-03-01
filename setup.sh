@@ -428,16 +428,36 @@ step_6_fail2ban() {
 
   # Enable and start Fail2Ban service
   if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/fail2ban.service ]]; then
-    systemctl enable --now fail2ban
+    # Test run fail2ban first to catch errors
+    info "Testing Fail2Ban configuration..."
+    if ! fail2ban-server -t 2>&1; then
+      warn "Fail2Ban configuration test failed, attempting to fix..."
+      # Try to create necessary directories
+      mkdir -p /run/fail2ban
+      mkdir -p /var/log/fail2ban
+      # Set permissions
+      chmod 755 /run/fail2ban
+      chmod 755 /var/log/fail2ban
+    fi
+    
+    systemctl enable --now fail2ban || {
+      # Show actual error
+      error "Failed to start Fail2Ban. Checking logs..."
+      journalctl -u fail2ban --no-pager -n 20 || true
+      # Try starting with debug
+      warn "Trying to start Fail2Ban in debug mode..."
+      fail2ban-server -xf start 2>&1 || true
+    }
     success "Fail2Ban installed and enabled."
   elif command -v fail2ban-server &>/dev/null; then
     # Try starting manually if systemd service not available
     info "Starting Fail2Ban server..."
-    fail2ban-server -start 2>/dev/null || warn "Could not start Fail2Ban automatically"
+    mkdir -p /run/fail2ban /var/log/fail2ban
+    fail2ban-server -xf start 2>&1 || warn "Could not start Fail2Ban automatically"
     success "Fail2Ban installed."
   else
     warn "Fail2Ban installed but could not configure automatic startup"
-    info "You may need to start it manually: fail2ban-server -start"
+    info "You may need to start it manually: fail2ban-server -xf start"
   fi
 
   # Configure jail.local for custom SSH port
