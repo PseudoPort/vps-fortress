@@ -394,19 +394,25 @@ step_6_fail2ban() {
         if dnf install -y epel-release 2>/dev/null; then
           dnf install -y fail2ban
         else
-          # Try alternative: install from source or copr
-          warn "EPEL not available, trying alternative installation..."
-          dnf install -y python3-pyinotify
-          # Download and install fail2ban from source
-          curl -s https://api.github.com/repos/fail2ban/fail2ban/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | cut -dv -f2
-          FAIL2BAN_VERSION=$(curl -s https://api.github.com/repos/fail2ban/fail2ban/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | cut -dv -f2)
-          cd /tmp
-          curl -sL "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz" -o "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
-          tar -xzf "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
-          cd "fail2ban-${FAIL2BAN_VERSION}"
-          python3 setup.py install
-          cd /tmp
-          rm -rf "fail2ban-${FAIL2BAN_VERSION}" "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+          # Try alternative: install from copr or source
+          warn "EPEL not available, trying COPR repository..."
+          if dnf copr enable -y @fail2ban/fail2ban 2>/dev/null; then
+            dnf install -y fail2ban
+          else
+            warn "COPR not available, trying alternative installation..."
+            # Install dependencies without failing
+            dnf install -y python3 python3-pip python3-pyinotify 2>/dev/null || true
+            # Download and install fail2ban from source
+            cd /tmp
+            FAIL2BAN_VERSION=$(curl -s https://api.github.com/repos/fail2ban/fail2ban/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | cut -dv -f2)
+            info "Installing Fail2Ban v${FAIL2BAN_VERSION} from source..."
+            curl -sL "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz" -o "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+            tar -xzf "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+            cd "fail2ban-${FAIL2BAN_VERSION}"
+            python3 setup.py install
+            cd /tmp
+            rm -rf "fail2ban-${FAIL2BAN_VERSION}" "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+          fi
         fi
       fi
       ;;
