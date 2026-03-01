@@ -621,7 +621,7 @@ sshd_block = f"""
 enabled  = true
 port     = {ssh_port}
 logpath  = {sshd_log}
-backend  = %(sshd_backend)s
+backend  = auto
 maxretry = 3
 bantime  = 3600
 """
