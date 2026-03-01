@@ -47,7 +47,7 @@ detect_os() {
     ubuntu|debian)
       PKG_MANAGER="apt"
       ;;
-    centos|rhel|almalinux|rocky)
+    centos|rhel|almalinux|rocky|opencloudos)
       PKG_MANAGER="dnf"
       ;;
     arch|manjaro)
@@ -62,7 +62,7 @@ detect_os() {
       elif echo "$OS_ID_LIKE" | grep -qiE "arch"; then
         PKG_MANAGER="pacman"
       else
-        die "Unsupported OS: $OS_ID. Supported: Ubuntu, Debian, CentOS, RHEL, AlmaLinux, Rocky, Arch."
+        die "Unsupported OS: $OS_ID. Supported: Ubuntu, Debian, CentOS, RHEL, AlmaLinux, Rocky, OpenCloudOS, Arch."
       fi
       ;;
   esac
