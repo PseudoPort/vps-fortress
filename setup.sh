@@ -33,8 +33,19 @@ die()     { error "$*"; exit 1; }
 # -----------------------------------------------------------------------------
 mark_step_completed() {
   local step_name="$1"
+  local extra_info="${2:-}"
   echo "$step_name" >> "$STATE_FILE"
+  if [[ -n "$extra_info" ]]; then
+    echo "$extra_info" >> "$STATE_FILE"
+  fi
   success "Step '$step_name' marked as completed"
+}
+
+get_step_info() {
+  local step_name="$1"
+  if [[ -f "$STATE_FILE" ]]; then
+    grep -A1 "^${step_name}$" "$STATE_FILE" | tail -n1
+  fi
 }
 
 is_step_completed() {
@@ -577,7 +588,13 @@ main() {
 
   if ! skip_if_completed "step_2"; then
     step_2_create_user
-    mark_step_completed "step_2"
+    mark_step_completed "step_2" "$NEW_USER"
+  else
+    # Restore NEW_USER from state if resuming
+    NEW_USER=$(get_step_info "step_2")
+    if [[ -n "$NEW_USER" ]]; then
+      info "Restored user: $NEW_USER"
+    fi
   fi
 
   if ! skip_if_completed "step_3"; then
@@ -587,7 +604,13 @@ main() {
 
   if ! skip_if_completed "step_4"; then
     step_4_harden_ssh
-    mark_step_completed "step_4"
+    mark_step_completed "step_4" "$SSH_PORT"
+  else
+    # Restore SSH_PORT from state if resuming
+    SSH_PORT=$(get_step_info "step_4")
+    if [[ -n "$SSH_PORT" ]]; then
+      info "Restored SSH port: $SSH_PORT"
+    fi
   fi
 
   if ! skip_if_completed "step_5"; then
