@@ -7,6 +7,8 @@ Interactive guide: https://gemini.google.com/share/bd00bde22788
 
 When you spin up a new Virtual Private Server (VPS), it is immediately exposed to the public internet. Automated bots and malicious actors begin scanning and attempting brute-force attacks within minutes. This guide provides a "first things first" checklist to lock down your server and establish a secure baseline before you deploy any applications.
 
+<img width="436" height="197" alt="Screenshot 2026-03-02 at 00 49 24" src="https://github.com/user-attachments/assets/b1ba8669-9c12-49eb-b4c8-90d1382da317" />
+
 Prerequisites
 -------------
 
