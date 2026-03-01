@@ -532,7 +532,24 @@ step_6_fail2ban() {
             pip3 install "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz"
             # Install systemd service
             info "Installing Fail2Ban systemd service..."
-            curl -sL "https://raw.githubusercontent.com/fail2ban/fail2ban/${FAIL2BAN_VERSION}/fail2ban.service" -o /etc/systemd/system/fail2ban.service
+            # Create a proper systemd service file
+            cat > /etc/systemd/system/fail2ban.service << 'EOF'
+[Unit]
+Description=Fail2Ban Service
+Documentation=man:fail2ban(1)
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/fail2ban-server -xf start
+ExecStop=/usr/local/bin/fail2ban-server -xf stop
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartPreventExitStatus=255
+
+[Install]
+WantedBy=multi-user.target
+EOF
             systemctl daemon-reload 2>/dev/null || true
           fi
         fi
@@ -546,9 +563,15 @@ step_6_fail2ban() {
 
   # Enable and start Fail2Ban service
   if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/fail2ban.service ]]; then
+    # Find fail2ban-server path
+    FAIL2BAN_BIN=$(command -v fail2ban-server 2>/dev/null || echo "/usr/local/bin/fail2ban-server")
+    
+    # Update service file with correct path
+    sed -i "s|/usr/local/bin/fail2ban-server|$FAIL2BAN_BIN|g" /etc/systemd/system/fail2ban.service
+    
     # Test run fail2ban first to catch errors
     info "Testing Fail2Ban configuration..."
-    if ! fail2ban-server -t 2>&1; then
+    if ! "$FAIL2BAN_BIN" -t 2>&1; then
       warn "Fail2Ban configuration test failed, attempting to fix..."
       # Try to create necessary directories
       mkdir -p /run/fail2ban
@@ -558,13 +581,14 @@ step_6_fail2ban() {
       chmod 755 /var/log/fail2ban
     fi
     
+    systemctl daemon-reload
     systemctl enable --now fail2ban || {
       # Show actual error
       error "Failed to start Fail2Ban. Checking logs..."
       journalctl -u fail2ban --no-pager -n 20 || true
       # Try starting with debug
       warn "Trying to start Fail2Ban in debug mode..."
-      fail2ban-server -xf start 2>&1 || true
+      "$FAIL2BAN_BIN" -xf start 2>&1 || true
     }
     success "Fail2Ban installed and enabled."
   elif command -v fail2ban-server &>/dev/null; then
