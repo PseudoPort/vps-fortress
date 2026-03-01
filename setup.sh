@@ -523,34 +523,24 @@ step_6_fail2ban() {
             git clone https://github.com/fail2ban/fail2ban.git
             cd fail2ban
             python3 setup.py install
+            
+            # Install init.d script (per official docs)
+            info "Installing Fail2Ban init.d script..."
+            cp files/debian-initd /etc/init.d/fail2ban
+            chmod +x /etc/init.d/fail2ban
+            
+            # Enable and start Fail2Ban via init.d
+            info "Enabling Fail2Ban service..."
+            if command -v systemctl &>/dev/null; then
+              # Try to use systemd if available
+              systemctl daemon-reload 2>/dev/null || true
+            fi
+            /etc/init.d/fail2ban start
+            
             cd /tmp
             rm -rf fail2ban
             
-            # Install systemd service
-            info "Installing Fail2Ban systemd service..."
-            # Create a proper systemd service file
-            cat > /etc/systemd/system/fail2ban.service << 'EOF'
-[Unit]
-Description=Fail2Ban Service
-Documentation=man:fail2ban(1)
-After=network.target
-
-[Service]
-Type=simple
-RemainAfterExit=yes
-Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"
-ExecStart=/usr/local/bin/fail2ban-server -x start
-ExecStop=/usr/local/bin/fail2ban-server -x stop
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=5
-TimeoutStartSec=30
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-            systemctl daemon-reload 2>/dev/null || true
+            success "Fail2Ban installed and started."
           fi
         fi
       fi
@@ -562,16 +552,10 @@ EOF
   esac
 
   # Enable and start Fail2Ban service
-  if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/fail2ban.service ]]; then
-    # Find fail2ban-server path
-    FAIL2BAN_BIN=$(command -v fail2ban-server 2>/dev/null || echo "/usr/local/bin/fail2ban-server")
-    
-    # Update service file with correct path
-    sed -i "s|/usr/local/bin/fail2ban-server|$FAIL2BAN_BIN|g" /etc/systemd/system/fail2ban.service
-    
+  if [[ -f /etc/init.d/fail2ban ]]; then
     # Test run fail2ban first to catch errors
     info "Testing Fail2Ban configuration..."
-    if ! "$FAIL2BAN_BIN" -t 2>&1; then
+    if ! fail2ban-server -t 2>&1; then
       warn "Fail2Ban configuration test failed, attempting to fix..."
       # Try to create necessary directories
       mkdir -p /run/fail2ban
@@ -581,19 +565,14 @@ EOF
       chmod 755 /var/log/fail2ban
     fi
     
-    systemctl daemon-reload
-    systemctl enable --now fail2ban || {
-      # Show actual error
-      error "Failed to start Fail2Ban. Checking logs..."
-      journalctl -u fail2ban --no-pager -n 20 || true
-      # Try starting with debug
-      warn "Trying to start Fail2Ban in debug mode..."
-      "$FAIL2BAN_BIN" -xf start 2>&1 || true
+    # Start via init.d script (per official docs)
+    /etc/init.d/fail2ban start || {
+      error "Failed to start Fail2Ban"
     }
-    success "Fail2Ban installed and enabled."
+    success "Fail2Ban installed and started."
   elif command -v fail2ban-server &>/dev/null; then
-    # Try starting manually if systemd service not available
-    info "Starting Fail2Ban server..."
+    # Try starting manually if init.d script not available
+    info "Starting Fail2Ban server manually..."
     mkdir -p /run/fail2ban /var/log/fail2ban
     fail2ban-server -xf start 2>&1 || warn "Could not start Fail2Ban automatically"
     success "Fail2Ban installed."
@@ -664,7 +643,11 @@ print("jail.local updated successfully.")
 PYEOF
 
   info "Restarting Fail2Ban..."
-  systemctl restart fail2ban
+  if [[ -f /etc/init.d/fail2ban ]]; then
+    /etc/init.d/fail2ban restart
+  else
+    systemctl restart fail2ban 2>/dev/null || fail2ban-server -xf restart 2>/dev/null || true
+  fi
   success "Fail2Ban configured and restarted."
 }
 
