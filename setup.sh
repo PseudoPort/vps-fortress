@@ -512,8 +512,8 @@ step_6_fail2ban() {
             dnf install -y fail2ban
           else
             warn "COPR not available, trying alternative installation..."
-            # Install git if not available
-            dnf install -y git 2>/dev/null || true
+            # Install git and LSB if not available (needed for init.d script)
+            dnf install -y git lsb-core 2>/dev/null || true
             # Install dependencies
             dnf install -y python3 python3-pyinotify 2>/dev/null || true
             # Clone and install fail2ban from source using setup.py (per official docs)
@@ -647,7 +647,7 @@ PYEOF
   elif [[ -f /etc/init.d/fail2ban ]]; then
     /etc/init.d/fail2ban restart
   else
-    fail2ban-server -xf restart 2>/dev/null || true
+    PYTHONPATH=/usr/local/lib/python3.11/site-packages /usr/local/bin/fail2ban-server -xf restart 2>/dev/null || true
   fi
   success "Fail2Ban configured and restarted."
 }
