@@ -7,6 +7,11 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
+# State file for resume functionality
+# -----------------------------------------------------------------------------
+STATE_FILE="/var/run/vps-fortress.state"
+
+# -----------------------------------------------------------------------------
 # Colors & Helpers
 # -----------------------------------------------------------------------------
 RED='\033[0;31m'
@@ -22,6 +27,34 @@ warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 step()    { echo -e "\n${BOLD}${GREEN}==> $*${RESET}"; }
 die()     { error "$*"; exit 1; }
+
+# -----------------------------------------------------------------------------
+# Resume functionality
+# -----------------------------------------------------------------------------
+mark_step_completed() {
+  local step_name="$1"
+  echo "$step_name" >> "$STATE_FILE"
+  success "Step '$step_name' marked as completed"
+}
+
+is_step_completed() {
+  local step_name="$1"
+  if [[ -f "$STATE_FILE" ]] && grep -qF "$step_name" "$STATE_FILE"; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+skip_if_completed() {
+  local step_name="$1"
+  if is_step_completed "$step_name"; then
+    info "Skipping step '$step_name' (already completed)"
+    return 0
+  else
+    return 1
+  fi
+}
 
 # -----------------------------------------------------------------------------
 # Root check
@@ -479,6 +512,56 @@ print_summary() {
 # Main
 # -----------------------------------------------------------------------------
 main() {
+  # Check for flags
+  local resume=false
+  local clear_state=false
+  
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --resume|-r)
+        resume=true
+        ;;
+      --clear-state|-c)
+        clear_state=true
+        ;;
+      --help|-h)
+        echo "Usage: $0 [OPTIONS]"
+        echo ""
+        echo "Options:"
+        echo "  --resume, -r     Resume from previous interrupted run"
+        echo "  --clear-state, -c Clear state file and start fresh"
+        echo "  --help, -h       Show this help message"
+        exit 0
+        ;;
+      *)
+        error "Unknown option: $1"
+        echo "Use --help for usage information"
+        exit 1
+        ;;
+    esac
+    shift
+  done
+
+  # Clear state if requested
+  if [[ "$clear_state" == true ]]; then
+    if [[ -f "$STATE_FILE" ]]; then
+      rm -f "$STATE_FILE"
+      success "State file cleared"
+    else
+      info "No state file to clear"
+    fi
+  fi
+
+  # Resume mode
+  if [[ "$resume" == true ]]; then
+    if [[ -f "$STATE_FILE" ]]; then
+      info "Resuming from previous run..."
+      info "Completed steps: $(tr '\n' ' ' < "$STATE_FILE")"
+    else
+      warn "No previous state found, starting fresh..."
+    fi
+  fi
+
   echo ""
   echo -e "${BOLD}${CYAN}============================================================${RESET}"
   echo -e "${BOLD}${CYAN}  vps-fortress: Automated VPS Hardening Script${RESET}"
@@ -487,13 +570,40 @@ main() {
 
   detect_os
 
-  step_1_update_packages
-  step_2_create_user
-  step_3_ssh_key_auth
-  step_4_harden_ssh
-  step_5_configure_firewall
-  step_6_fail2ban
-  step_7_auto_updates
+  if ! skip_if_completed "step_1"; then
+    step_1_update_packages
+    mark_step_completed "step_1"
+  fi
+
+  if ! skip_if_completed "step_2"; then
+    step_2_create_user
+    mark_step_completed "step_2"
+  fi
+
+  if ! skip_if_completed "step_3"; then
+    step_3_ssh_key_auth
+    mark_step_completed "step_3"
+  fi
+
+  if ! skip_if_completed "step_4"; then
+    step_4_harden_ssh
+    mark_step_completed "step_4"
+  fi
+
+  if ! skip_if_completed "step_5"; then
+    step_5_configure_firewall
+    mark_step_completed "step_5"
+  fi
+
+  if ! skip_if_completed "step_6"; then
+    step_6_fail2ban
+    mark_step_completed "step_6"
+  fi
+
+  if ! skip_if_completed "step_7"; then
+    step_7_auto_updates
+    mark_step_completed "step_7"
+  fi
 
   print_summary
 }
