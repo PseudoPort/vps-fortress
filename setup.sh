@@ -530,6 +530,15 @@ step_6_fail2ban() {
             info "Installing Fail2Ban v${FAIL2BAN_VERSION} from source using pip..."
             # Use pip3 to install which handles Python path properly
             pip3 install "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz"
+            
+            # Create symlinks for fail2ban-client and fail2ban-server
+            info "Creating symlinks for fail2ban commands..."
+            ln -sf /usr/local/bin/fail2ban-client /usr/local/bin/fail2ban-client 2>/dev/null || true
+            ln -sf /usr/local/bin/fail2ban-server /usr/local/bin/fail2ban-server 2>/dev/null || true
+            # Ensure they're in PATH
+            ln -sf $(which fail2ban-client) /usr/bin/fail2ban-client 2>/dev/null || true
+            ln -sf $(which fail2ban-server) /usr/bin/fail2ban-server 2>/dev/null || true
+            
             # Install systemd service
             info "Installing Fail2Ban systemd service..."
             # Create a proper systemd service file
