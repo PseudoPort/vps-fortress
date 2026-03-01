@@ -540,12 +540,13 @@ Documentation=man:fail2ban(1)
 After=network.target
 
 [Service]
-Type=forking
+Type=simple
 ExecStart=/usr/local/bin/fail2ban-server -xf start
 ExecStop=/usr/local/bin/fail2ban-server -xf stop
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
-RestartPreventExitStatus=255
+TimeoutStartSec=30
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
