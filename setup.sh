@@ -632,6 +632,7 @@ import re, sys
 
 jail_local = "${jail_local}"
 sshd_log = "${sshd_log}"
+ssh_port = "${SSH_PORT}"
 
 with open(jail_local, "r") as f:
     content = f.read()
@@ -639,7 +640,7 @@ with open(jail_local, "r") as f:
 sshd_block = f"""
 [sshd]
 enabled  = true
-port     = {SSH_PORT}
+port     = {ssh_port}
 logpath  = {sshd_log}
 backend  = %(sshd_backend)s
 maxretry = 3
