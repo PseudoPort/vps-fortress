@@ -556,35 +556,28 @@ step_6_fail2ban() {
       ;;
   esac
 
-  # Enable and start Fail2Ban service
-  if systemctl list-unit-files | grep -q fail2ban.service; then
-    # Test run fail2ban first to catch errors
-    info "Testing Fail2Ban configuration..."
-    if ! PYTHONPATH=/usr/local/lib/python3.11/site-packages /usr/local/bin/fail2ban-server -t 2>&1; then
-      warn "Fail2Ban configuration test failed, attempting to fix..."
-      # Try to create necessary directories
-      mkdir -p /run/fail2ban
-      mkdir -p /var/log/fail2ban
-      # Set permissions
-      chmod 755 /run/fail2ban
-      chmod 755 /var/log/fail2ban
-    fi
-    
-    # Start via systemd
-    systemctl start fail2ban || {
-      error "Failed to start Fail2Ban"
-    }
-    success "Fail2Ban installed and started."
+  # Enable and start Fail2Ban service (only if not already handled in install)
+  # Skip if systemd service was already started in install phase
+  if systemctl is-active fail2ban &>/dev/null; then
+    success "Fail2Ban is already running via systemd."
+  elif pgrep -f fail2ban-server > /dev/null; then
+    success "Fail2Ban is already running."
   else
-    # Try starting manually
-    info "Starting Fail2Ban server manually..."
-    mkdir -p /run/fail2ban /var/log/fail2ban
-    PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
-    sleep 2
-    if pgrep -f fail2ban-server > /dev/null; then
-      success "Fail2Ban started."
+    # Try systemd first
+    if systemctl list-unit-files | grep -q fail2ban.service; then
+      info "Testing Fail2Ban configuration..."
+      if ! PYTHONPATH=/usr/local/lib/python3.11/site-packages /usr/local/bin/fail2ban-server -t 2>&1; then
+        warn "Fail2Ban configuration test failed, attempting to fix..."
+        mkdir -p /run/fail2ban /var/log/fail2ban
+        chmod 755 /run/fail2ban /var/log/fail2ban
+      fi
+      systemctl start fail2ban
     else
-      warn "Could not start Fail2Ban automatically"
+      # Manual start as fallback
+      info "Starting Fail2Ban server manually..."
+      mkdir -p /run/fail2ban /var/log/fail2ban
+      PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
+      sleep 2
     fi
   fi
 
