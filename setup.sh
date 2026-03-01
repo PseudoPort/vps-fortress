@@ -552,10 +552,10 @@ step_6_fail2ban() {
   esac
 
   # Enable and start Fail2Ban service
-  if [[ -f /etc/init.d/fail2ban ]]; then
+  if systemctl list-unit-files | grep -q fail2ban.service; then
     # Test run fail2ban first to catch errors
     info "Testing Fail2Ban configuration..."
-    if ! fail2ban-server -t 2>&1; then
+    if ! /usr/local/bin/fail2ban-server -t 2>&1; then
       warn "Fail2Ban configuration test failed, attempting to fix..."
       # Try to create necessary directories
       mkdir -p /run/fail2ban
@@ -565,20 +565,17 @@ step_6_fail2ban() {
       chmod 755 /var/log/fail2ban
     fi
     
-    # Start via init.d script (per official docs)
-    /etc/init.d/fail2ban start || {
+    # Start via systemd
+    systemctl start fail2ban || {
       error "Failed to start Fail2Ban"
     }
     success "Fail2Ban installed and started."
-  elif command -v fail2ban-server &>/dev/null; then
-    # Try starting manually if init.d script not available
+  else
+    # Try starting manually
     info "Starting Fail2Ban server manually..."
     mkdir -p /run/fail2ban /var/log/fail2ban
-    fail2ban-server -xf start 2>&1 || warn "Could not start Fail2Ban automatically"
+    /usr/local/bin/fail2ban-server -xf start 2>&1 || warn "Could not start Fail2Ban automatically"
     success "Fail2Ban installed."
-  else
-    warn "Fail2Ban installed but could not configure automatic startup"
-    info "You may need to start it manually: fail2ban-server -xf start"
   fi
 
   # Configure jail.local for custom SSH port
