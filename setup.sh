@@ -530,20 +530,16 @@ step_6_fail2ban() {
               # Add PYTHONPATH to find the fail2ban module
               sed -i 's|^ExecStart=|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=|' build/fail2ban.service
               cp build/fail2ban.service /etc/systemd/system/fail2ban.service
+              # Remove any conflicting SysV script
+              rm -f /etc/init.d/fail2ban
               systemctl daemon-reload
-            fi
-            
-            # Start fail2ban manually with proper PYTHONPATH
-            info "Starting Fail2Ban server..."
-            mkdir -p /run/fail2ban /var/log/fail2ban
-            PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
-            sleep 2
-            
-            # Check if running
-            if pgrep -f fail2ban-server > /dev/null; then
-              success "Fail2Ban installed and started."
+              systemctl enable --now fail2ban
             else
-              error "Failed to start Fail2Ban"
+              warn "systemd service file not found, trying alternative..."
+              # Fallback to manual start
+              mkdir -p /run/fail2ban /var/log/fail2ban
+              PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
+              sleep 2
             fi
             
             cd /tmp
@@ -561,8 +557,24 @@ step_6_fail2ban() {
   esac
 
   # Enable and start Fail2Ban service
-  if pgrep -f fail2ban-server > /dev/null; then
-    success "Fail2Ban is already running."
+  if systemctl list-unit-files | grep -q fail2ban.service; then
+    # Test run fail2ban first to catch errors
+    info "Testing Fail2Ban configuration..."
+    if ! PYTHONPATH=/usr/local/lib/python3.11/site-packages /usr/local/bin/fail2ban-server -t 2>&1; then
+      warn "Fail2Ban configuration test failed, attempting to fix..."
+      # Try to create necessary directories
+      mkdir -p /run/fail2ban
+      mkdir -p /var/log/fail2ban
+      # Set permissions
+      chmod 755 /run/fail2ban
+      chmod 755 /var/log/fail2ban
+    fi
+    
+    # Start via systemd
+    systemctl start fail2ban || {
+      error "Failed to start Fail2Ban"
+    }
+    success "Fail2Ban installed and started."
   else
     # Try starting manually
     info "Starting Fail2Ban server manually..."
@@ -638,12 +650,16 @@ print("jail.local updated successfully.")
 PYEOF
 
   info "Restarting Fail2Ban..."
-  # Kill existing process and restart
-  pkill -f fail2ban-server 2>/dev/null || true
-  sleep 1
-  mkdir -p /run/fail2ban /var/log/fail2ban
-  PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
-  sleep 2
+  if systemctl list-unit-files | grep -q fail2ban.service; then
+    systemctl restart fail2ban
+  else
+    # Manual restart
+    pkill -f fail2ban-server 2>/dev/null || true
+    sleep 1
+    mkdir -p /run/fail2ban /var/log/fail2ban
+    PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
+    sleep 2
+  fi
   success "Fail2Ban configured and restarted."
 }
 
