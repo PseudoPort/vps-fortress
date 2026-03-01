@@ -410,6 +410,10 @@ step_6_fail2ban() {
             tar -xzf "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
             cd "fail2ban-${FAIL2BAN_VERSION}"
             python3 setup.py install
+            # Install systemd service
+            info "Installing Fail2Ban systemd service..."
+            cp build/fail2ban.service /etc/systemd/system/fail2ban.service 2>/dev/null || true
+            systemctl daemon-reload 2>/dev/null || true
             cd /tmp
             rm -rf "fail2ban-${FAIL2BAN_VERSION}" "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
           fi
@@ -422,8 +426,19 @@ step_6_fail2ban() {
       ;;
   esac
 
-  systemctl enable --now fail2ban
-  success "Fail2Ban installed and enabled."
+  # Enable and start Fail2Ban service
+  if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/fail2ban.service ]]; then
+    systemctl enable --now fail2ban
+    success "Fail2Ban installed and enabled."
+  elif command -v fail2ban-server &>/dev/null; then
+    # Try starting manually if systemd service not available
+    info "Starting Fail2Ban server..."
+    fail2ban-server -start 2>/dev/null || warn "Could not start Fail2Ban automatically"
+    success "Fail2Ban installed."
+  else
+    warn "Fail2Ban installed but could not configure automatic startup"
+    info "You may need to start it manually: fail2ban-server -start"
+  fi
 
   # Configure jail.local for custom SSH port
   local jail_conf="/etc/fail2ban/jail.conf"
