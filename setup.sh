@@ -524,20 +524,16 @@ step_6_fail2ban() {
             fi
             # Install dependencies
             dnf install -y python3 python3-pyinotify 2>/dev/null || true
-            # Download and install fail2ban from source using pip
+            # Download and install fail2ban from source using setup.py
             cd /tmp
             FAIL2BAN_VERSION=$(curl -s https://api.github.com/repos/fail2ban/fail2ban/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | cut -dv -f2)
-            info "Installing Fail2Ban v${FAIL2BAN_VERSION} from source using pip..."
-            # Use pip3 to install which handles Python path properly
-            pip3 install "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz"
-            
-            # Create symlinks for fail2ban-client and fail2ban-server
-            info "Creating symlinks for fail2ban commands..."
-            ln -sf /usr/local/bin/fail2ban-client /usr/local/bin/fail2ban-client 2>/dev/null || true
-            ln -sf /usr/local/bin/fail2ban-server /usr/local/bin/fail2ban-server 2>/dev/null || true
-            # Ensure they're in PATH
-            ln -sf $(which fail2ban-client) /usr/bin/fail2ban-client 2>/dev/null || true
-            ln -sf $(which fail2ban-server) /usr/bin/fail2ban-server 2>/dev/null || true
+            info "Installing Fail2Ban v${FAIL2BAN_VERSION} from source using setup.py..."
+            curl -sL "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz" -o "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+            tar -xzf "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+            cd "fail2ban-${FAIL2BAN_VERSION}"
+            python3 setup.py install
+            cd /tmp
+            rm -rf "fail2ban-${FAIL2BAN_VERSION}" "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
             
             # Install systemd service
             info "Installing Fail2Ban systemd service..."
