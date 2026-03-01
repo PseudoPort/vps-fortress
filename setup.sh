@@ -60,8 +60,18 @@ is_step_completed() {
 skip_if_completed() {
   local step_name="$1"
   if is_step_completed "$step_name"; then
-    info "Skipping step '$step_name' (already completed)"
-    return 0
+    info "Step '$step_name' was already completed."
+    read -rp "Do you want to redo it? [y/N]: " redo_choice
+    redo_choice="${redo_choice:-N}"
+    if [[ "$redo_choice" =~ ^[Yy]$ ]]; then
+      info "Redoing step '$step_name'..."
+      # Remove the step from state file to allow re-running
+      sed -i "/^${step_name}$/d" "$STATE_FILE"
+      return 1
+    else
+      info "Skipping step '$step_name'"
+      return 0
+    fi
   else
     return 1
   fi
@@ -379,6 +389,42 @@ step_5_configure_firewall() {
 # -----------------------------------------------------------------------------
 step_6_fail2ban() {
   step "Step 6: Install and Configure Fail2Ban"
+
+  # Check if Fail2Ban is already installed and offer to reinstall
+  if command -v fail2ban-server &>/dev/null || command -v fail2ban-client &>/dev/null; then
+    info "Fail2Ban appears to be already installed"
+    read -rp "Do you want to reinstall/reconfigure Fail2Ban? [y/N]: " reinstall_choice
+    reinstall_choice="${reinstall_choice:-N}"
+    if [[ "$reinstall_choice" =~ ^[Yy]$ ]]; then
+      info "Uninstalling existing Fail2Ban..."
+      # Stop service
+      systemctl stop fail2ban 2>/dev/null || true
+      systemctl disable fail2ban 2>/dev/null || true
+      # Try different uninstall methods
+      case "$PKG_MANAGER" in
+        apt)
+          apt remove -y fail2ban 2>/dev/null || true
+          ;;
+        dnf)
+          dnf remove -y fail2ban 2>/dev/null || true
+          ;;
+        pacman)
+          pacman -R --noconfirm fail2ban 2>/dev/null || true
+          ;;
+      esac
+      # Remove pip version if installed
+      pip3 uninstall -y fail2ban 2>/dev/null || true
+      # Remove source installation
+      rm -f /usr/local/bin/fail2ban-* 2>/dev/null || true
+      rm -rf /usr/local/lib/python*/site-packages/fail2ban* 2>/dev/null || true
+      rm -f /etc/systemd/system/fail2ban.service 2>/dev/null || true
+      systemctl daemon-reload 2>/dev/null || true
+      success "Fail2Ban uninstalled"
+    else
+      info "Skipping Fail2Ban installation"
+      return 0
+    fi
+  fi
 
   case "$PKG_MANAGER" in
     apt)
