@@ -537,11 +537,13 @@ After=network.target
 
 [Service]
 Type=simple
+RemainAfterExit=yes
 Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"
-ExecStart=/usr/local/bin/fail2ban-server -xf start
-ExecStop=/usr/local/bin/fail2ban-server -xf stop
+ExecStart=/usr/local/bin/fail2ban-server -x start
+ExecStop=/usr/local/bin/fail2ban-server -x stop
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
+RestartSec=5
 TimeoutStartSec=30
 TimeoutStopSec=30
 
