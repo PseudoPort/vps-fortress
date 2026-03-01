@@ -85,6 +85,33 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # -----------------------------------------------------------------------------
+# Prerequisites checker
+# -----------------------------------------------------------------------------
+check_prerequisites() {
+  step "Checking prerequisites..."
+
+  local missing_prereqs=()
+
+  # Check for required commands
+  local required_cmds=(curl wget python3)
+  
+  for cmd in "${required_cmds[@]}"; do
+    if ! command -v "$cmd" &>/dev/null; then
+      missing_prereqs+=("$cmd")
+    fi
+  done
+
+  if [[ ${#missing_prereqs[@]} -gt 0 ]]; then
+    warn "Missing prerequisites: ${missing_prereqs[*]}"
+    info "These will be installed automatically"
+    return 1
+  else
+    success "All prerequisites satisfied"
+    return 0
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Install prerequisites
 # -----------------------------------------------------------------------------
 install_prerequisites() {
@@ -753,12 +780,8 @@ main() {
 
   detect_os
 
-  # Install prerequisites first (unless skipped)
-  if [[ "$skip_prereq" != true ]]; then
-    install_prerequisites
-  else
-    info "Skipping prerequisite installation (--skip-prereq)"
-  fi
+  # Check prerequisites first
+  check_prerequisites || install_prerequisites
 
   # Step 1: Update packages (start_step=1)
   if [[ $start_step -le 1 ]] && ! skip_if_completed "step_1"; then
