@@ -617,20 +617,30 @@ EOF
   # Inject or replace [sshd] section
   info "Configuring [sshd] jail in jail.local for port ${SSH_PORT}..."
 
+  # Detect SSH log file location
+  local sshd_log="/var/log/secure"
+  if [[ -f /var/log/auth.log ]]; then
+    sshd_log="/var/log/auth.log"
+  elif [[ -f /var/log/messages ]]; then
+    sshd_log="/var/log/messages"
+  fi
+  info "Using SSH log file: $sshd_log"
+
   # Remove any existing [sshd] block and re-insert a clean one
   python3 - <<PYEOF
 import re, sys
 
 jail_local = "${jail_local}"
+sshd_log = "${sshd_log}"
 
 with open(jail_local, "r") as f:
     content = f.read()
 
-sshd_block = """
+sshd_block = f"""
 [sshd]
 enabled  = true
-port     = ${SSH_PORT}
-logpath  = %(sshd_log)s
+port     = {SSH_PORT}
+logpath  = {sshd_log}
 backend  = %(sshd_backend)s
 maxretry = 3
 bantime  = 3600
