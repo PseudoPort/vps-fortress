@@ -524,18 +524,18 @@ step_6_fail2ban() {
             cd fail2ban
             python3 setup.py install
             
-            # Install init.d script (per official docs)
-            info "Installing Fail2Ban init.d script..."
-            cp files/debian-initd /etc/init.d/fail2ban
-            chmod +x /etc/init.d/fail2ban
-            
-            # Enable and start Fail2Ban via init.d
-            info "Enabling Fail2Ban service..."
-            if command -v systemctl &>/dev/null; then
-              # Try to use systemd if available
-              systemctl daemon-reload 2>/dev/null || true
+            # Install systemd service file from build directory (per official docs)
+            info "Installing Fail2Ban systemd service..."
+            if [[ -f build/fail2ban.service ]]; then
+              cp build/fail2ban.service /etc/systemd/system/fail2ban.service
+              systemctl daemon-reload
+              systemctl enable --now fail2ban
+            else
+              warn "systemd service file not found, trying alternative..."
+              # Fallback to manual start
+              mkdir -p /run/fail2ban /var/log/fail2ban
+              /usr/local/bin/fail2ban-server -xf start
             fi
-            /etc/init.d/fail2ban start
             
             cd /tmp
             rm -rf fail2ban
@@ -643,10 +643,12 @@ print("jail.local updated successfully.")
 PYEOF
 
   info "Restarting Fail2Ban..."
-  if [[ -f /etc/init.d/fail2ban ]]; then
+  if systemctl list-unit-files | grep -q fail2ban.service; then
+    systemctl restart fail2ban
+  elif [[ -f /etc/init.d/fail2ban ]]; then
     /etc/init.d/fail2ban restart
   else
-    systemctl restart fail2ban 2>/dev/null || fail2ban-server -xf restart 2>/dev/null || true
+    fail2ban-server -xf restart 2>/dev/null || true
   fi
   success "Fail2Ban configured and restarted."
 }
