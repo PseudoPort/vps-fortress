@@ -527,8 +527,10 @@ step_6_fail2ban() {
             # Install systemd service file from build directory (per official docs)
             info "Installing Fail2Ban systemd service..."
             if [[ -f build/fail2ban.service ]]; then
-              # Add PYTHONPATH to find the fail2ban module
+              # Add PYTHONPATH and fix service type for RHEL
               sed -i 's|^ExecStart=|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=|' build/fail2ban.service
+              # Change to forking if not already
+              sed -i 's|^Type=simple|Type=forking|' build/fail2ban.service
               cp build/fail2ban.service /etc/systemd/system/fail2ban.service
               systemctl daemon-reload
               systemctl enable --now fail2ban
