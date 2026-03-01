@@ -675,8 +675,14 @@ PYEOF
       info "Adding PYTHONPATH to existing fail2ban.service..."
       sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
       systemctl daemon-reload
+      systemctl restart fail2ban
+    else
+      # Service is already properly configured, just reload to apply config changes
+      if ! fail2ban-client reload 2>/dev/null; then
+        info "Reload failed, trying restart..."
+        systemctl restart fail2ban
+      fi
     fi
-    systemctl restart fail2ban
   else
     # Manual restart
     pkill -f fail2ban-server 2>/dev/null || true
