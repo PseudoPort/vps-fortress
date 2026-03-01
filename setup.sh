@@ -532,6 +532,10 @@ step_6_fail2ban() {
             tar -xzf "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
             cd "fail2ban-${FAIL2BAN_VERSION}"
             python3 setup.py install
+            # Copy fail2ban commands to /usr/bin for system-wide access
+            info "Copying fail2ban commands to system PATH..."
+            cp /usr/local/bin/fail2ban-client /usr/bin/ 2>/dev/null || true
+            cp /usr/local/bin/fail2ban-server /usr/bin/ 2>/dev/null || true
             cd /tmp
             rm -rf "fail2ban-${FAIL2BAN_VERSION}" "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
             
