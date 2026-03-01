@@ -54,15 +54,31 @@ detect_os() {
       PKG_MANAGER="pacman"
       ;;
     *)
-      # Fallback via ID_LIKE
+      # Try ID_LIKE fallback
       if echo "$OS_ID_LIKE" | grep -qiE "debian|ubuntu"; then
         PKG_MANAGER="apt"
-      elif echo "$OS_ID_LIKE" | grep -qiE "rhel|centos|fedora"; then
+      elif echo "$OS_ID_LIKE" | grep -qiE "rhel|centos|fedora|opencloudos"; then
         PKG_MANAGER="dnf"
       elif echo "$OS_ID_LIKE" | grep -qiE "arch"; then
         PKG_MANAGER="pacman"
       else
-        die "Unsupported OS: $OS_ID. Supported: Ubuntu, Debian, CentOS, RHEL, AlmaLinux, Rocky, OpenCloudOS, Arch."
+        # Auto-detect package manager by probing available commands
+        info "OS not directly supported, probing for package manager..."
+        if command -v dnf &>/dev/null; then
+          PKG_MANAGER="dnf"
+          warn "Detected dnf - treating as RHEL-based distribution"
+        elif command -v apt &>/dev/null; then
+          PKG_MANAGER="apt"
+          warn "Detected apt - treating as Debian-based distribution"
+        elif command -v pacman &>/dev/null; then
+          PKG_MANAGER="pacman"
+          warn "Detected pacman - treating as Arch-based distribution"
+        elif command -v zypper &>/dev/null; then
+          PKG_MANAGER="zypper"
+          warn "Detected zypper - treating as SUSE-based distribution"
+        else
+          die "Unsupported OS: $OS_ID. Supported: Ubuntu, Debian, CentOS, RHEL, AlmaLinux, Rocky, OpenCloudOS, Arch."
+        fi
       fi
       ;;
   esac
