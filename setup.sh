@@ -512,17 +512,18 @@ step_6_fail2ban() {
             dnf install -y fail2ban
           else
             warn "COPR not available, trying alternative installation..."
-            # Install git if not available
-            dnf install -y git 2>/dev/null || true
+            # Install git and pip if not available
+            dnf install -y git python3-pip 2>/dev/null || true
             # Install dependencies
             dnf install -y python3 python3-pyinotify 2>/dev/null || true
-            # Clone and install fail2ban from source using setup.py (per official docs)
+            # Clone and install fail2ban from source using pip --system (per official docs)
             cd /tmp
             info "Cloning Fail2Ban from GitHub and installing..."
             rm -rf fail2ban 2>/dev/null || true
             git clone https://github.com/fail2ban/fail2ban.git
             cd fail2ban
-            python3 setup.py install
+            # Use pip --system to install system-wide which handles Python path correctly
+            pip3 install --system .
             cd /tmp
             rm -rf fail2ban
             
