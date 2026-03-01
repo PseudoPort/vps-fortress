@@ -583,6 +583,7 @@ main() {
   # Check for flags
   local resume=false
   local clear_state=false
+  local start_step=1
   
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -592,13 +593,27 @@ main() {
       --clear-state|-c)
         clear_state=true
         ;;
+      --start-step|-s)
+        start_step="${2:-1}"
+        shift
+        ;;
       --help|-h)
         echo "Usage: $0 [OPTIONS]"
         echo ""
         echo "Options:"
-        echo "  --resume, -r     Resume from previous interrupted run"
-        echo "  --clear-state, -c Clear state file and start fresh"
-        echo "  --help, -h       Show this help message"
+        echo "  --resume, -r         Resume from previous interrupted run"
+        echo "  --clear-state, -c     Clear state file and start fresh"
+        echo "  --start-step, -s N    Start from step N (1-7)"
+        echo "  --help, -h           Show this help message"
+        echo ""
+        echo "Steps:"
+        echo "  1. Update System Packages"
+        echo "  2. Create Non-Root Sudo User"
+        echo "  3. Configure SSH Key Authentication"
+        echo "  4. Harden SSH Configuration"
+        echo "  5. Configure Firewall"
+        echo "  6. Install and Configure Fail2Ban"
+        echo "  7. Enable Automatic Security Updates"
         exit 0
         ;;
       *)
@@ -638,12 +653,14 @@ main() {
 
   detect_os
 
-  if ! skip_if_completed "step_1"; then
+  # Step 1: Update packages (start_step=1)
+  if [[ $start_step -le 1 ]] && ! skip_if_completed "step_1"; then
     step_1_update_packages
     mark_step_completed "step_1"
   fi
 
-  if ! skip_if_completed "step_2"; then
+  # Step 2: Create user (start_step=2)
+  if [[ $start_step -le 2 ]] && ! skip_if_completed "step_2"; then
     step_2_create_user
     mark_step_completed "step_2" "$NEW_USER"
   else
@@ -654,12 +671,14 @@ main() {
     fi
   fi
 
-  if ! skip_if_completed "step_3"; then
+  # Step 3: SSH key auth (start_step=3)
+  if [[ $start_step -le 3 ]] && ! skip_if_completed "step_3"; then
     step_3_ssh_key_auth
     mark_step_completed "step_3"
   fi
 
-  if ! skip_if_completed "step_4"; then
+  # Step 4: Harden SSH (start_step=4)
+  if [[ $start_step -le 4 ]] && ! skip_if_completed "step_4"; then
     step_4_harden_ssh
     mark_step_completed "step_4" "$SSH_PORT"
   else
@@ -670,17 +689,20 @@ main() {
     fi
   fi
 
-  if ! skip_if_completed "step_5"; then
+  # Step 5: Firewall (start_step=5)
+  if [[ $start_step -le 5 ]] && ! skip_if_completed "step_5"; then
     step_5_configure_firewall
     mark_step_completed "step_5"
   fi
 
-  if ! skip_if_completed "step_6"; then
+  # Step 6: Fail2Ban (start_step=6)
+  if [[ $start_step -le 6 ]] && ! skip_if_completed "step_6"; then
     step_6_fail2ban
     mark_step_completed "step_6"
   fi
 
-  if ! skip_if_completed "step_7"; then
+  # Step 7: Auto updates (start_step=7)
+  if [[ $start_step -le 7 ]] && ! skip_if_completed "step_7"; then
     step_7_auto_updates
     mark_step_completed "step_7"
   fi
