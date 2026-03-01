@@ -496,6 +496,11 @@ step_6_fail2ban() {
     apt)
       info "Installing Fail2Ban..."
       apt install -y fail2ban
+      # Ensure PYTHONPATH in systemd service if fail2ban was installed from source earlier
+      if [[ -f /etc/systemd/system/fail2ban.service ]] && ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service; then
+        sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
+        systemctl daemon-reload
+      fi
       ;;
     dnf)
       info "Installing Fail2Ban..."
@@ -528,18 +533,34 @@ step_6_fail2ban() {
             info "Installing Fail2Ban systemd service..."
             if [[ -f build/fail2ban.service ]]; then
               # Add PYTHONPATH to find the fail2ban module
-              sed -i 's|^ExecStart=|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=|' build/fail2ban.service
+              # Use more robust sed that handles various ExecStart formats
+              sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' build/fail2ban.service
               cp build/fail2ban.service /etc/systemd/system/fail2ban.service
               # Remove any conflicting SysV script
               rm -f /etc/init.d/fail2ban
               systemctl daemon-reload
               systemctl enable --now fail2ban
             else
-              warn "systemd service file not found, trying alternative..."
-              # Fallback to manual start
+              warn "systemd service file not found, creating custom service..."
+              # Create custom service file with PYTHONPATH
+              cat > /etc/systemd/system/fail2ban.service << 'FAIL2BANEOF'
+[Unit]
+Description=Fail2Ban Service
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/fail2ban-server -xf start
+PIDFile=/var/run/fail2ban/fail2ban.pid
+Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"
+
+[Install]
+WantedBy=multi-user.target
+FAIL2BANEOF
+              rm -f /etc/init.d/fail2ban
               mkdir -p /run/fail2ban /var/log/fail2ban
-              PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
-              sleep 2
+              systemctl daemon-reload
+              systemctl enable --now fail2ban
             fi
             
             cd /tmp
@@ -553,6 +574,11 @@ step_6_fail2ban() {
     pacman)
       info "Installing Fail2Ban..."
       pacman -S --noconfirm fail2ban
+      # Ensure PYTHONPATH in systemd service if fail2ban was installed from source earlier
+      if [[ -f /etc/systemd/system/fail2ban.service ]] && ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service; then
+        sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
+        systemctl daemon-reload
+      fi
       ;;
   esac
 
@@ -644,6 +670,12 @@ PYEOF
 
   info "Restarting Fail2Ban..."
   if systemctl list-unit-files | grep -q fail2ban.service; then
+    # Make sure the service file has PYTHONPATH
+    if ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service 2>/dev/null; then
+      info "Adding PYTHONPATH to existing fail2ban.service..."
+      sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
+      systemctl daemon-reload
+    fi
     systemctl restart fail2ban
   else
     # Manual restart
