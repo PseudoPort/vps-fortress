@@ -512,32 +512,19 @@ step_6_fail2ban() {
             dnf install -y fail2ban
           else
             warn "COPR not available, trying alternative installation..."
-            # Install pip3 if not available
-            info "Installing pip3..."
-            if ! command -v pip3 &>/dev/null; then
-              dnf install -y python3-pip 2>/dev/null || {
-                # Try curl method if dnf fails
-                curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-                python3 /tmp/get-pip.py
-                rm -f /tmp/get-pip.py
-              }
-            fi
+            # Install git if not available
+            dnf install -y git 2>/dev/null || true
             # Install dependencies
             dnf install -y python3 python3-pyinotify 2>/dev/null || true
-            # Download and install fail2ban from source using setup.py
+            # Clone and install fail2ban from source using setup.py (per official docs)
             cd /tmp
-            FAIL2BAN_VERSION=$(curl -s https://api.github.com/repos/fail2ban/fail2ban/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | cut -dv -f2)
-            info "Installing Fail2Ban v${FAIL2BAN_VERSION} from source using setup.py..."
-            curl -sL "https://github.com/fail2ban/fail2ban/archive/refs/tags/${FAIL2BAN_VERSION}.tar.gz" -o "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
-            tar -xzf "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
-            cd "fail2ban-${FAIL2BAN_VERSION}"
+            info "Cloning Fail2Ban from GitHub and installing..."
+            rm -rf fail2ban 2>/dev/null || true
+            git clone https://github.com/fail2ban/fail2ban.git
+            cd fail2ban
             python3 setup.py install
-            # Copy fail2ban commands to /usr/bin for system-wide access
-            info "Copying fail2ban commands to system PATH..."
-            cp /usr/local/bin/fail2ban-client /usr/bin/ 2>/dev/null || true
-            cp /usr/local/bin/fail2ban-server /usr/bin/ 2>/dev/null || true
             cd /tmp
-            rm -rf "fail2ban-${FAIL2BAN_VERSION}" "fail2ban-${FAIL2BAN_VERSION}.tar.gz"
+            rm -rf fail2ban
             
             # Install systemd service
             info "Installing Fail2Ban systemd service..."
