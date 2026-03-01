@@ -85,6 +85,45 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # -----------------------------------------------------------------------------
+# Install prerequisites
+# -----------------------------------------------------------------------------
+install_prerequisites() {
+  step "Installing prerequisites..."
+
+  case "$PKG_MANAGER" in
+    apt)
+      info "Installing basic prerequisites..."
+      apt update
+      apt install -y python3 python3-pip curl wget git
+      ;;
+    dnf)
+      info "Installing basic prerequisites..."
+      dnf install -y python3 python3-pip curl wget git
+      # Install pip if not available
+      if ! command -v pip3 &>/dev/null; then
+        info "Installing pip3..."
+        dnf install -y python3-pip 2>/dev/null || {
+          curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+          python3 /tmp/get-pip.py
+          rm -f /tmp/get-pip.py
+        }
+      fi
+      ;;
+    pacman)
+      info "Installing basic prerequisites..."
+      pacman -S --noconfirm python python-pip curl wget git
+      ;;
+  esac
+
+  # Ensure python3 is available
+  if ! command -v python3 &>/dev/null; then
+    die "python3 is required but not installed"
+  fi
+
+  success "Prerequisites installed."
+}
+
+# -----------------------------------------------------------------------------
 # Detect OS / Package Manager
 # -----------------------------------------------------------------------------
 detect_os() {
@@ -640,6 +679,7 @@ main() {
   local resume=false
   local clear_state=false
   local start_step=1
+  local skip_prereq=false
   
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -653,6 +693,9 @@ main() {
         start_step="${2:-1}"
         shift
         ;;
+      --skip-prereq|-n)
+        skip_prereq=true
+        ;;
       --help|-h)
         echo "Usage: $0 [OPTIONS]"
         echo ""
@@ -660,6 +703,7 @@ main() {
         echo "  --resume, -r         Resume from previous interrupted run"
         echo "  --clear-state, -c     Clear state file and start fresh"
         echo "  --start-step, -s N    Start from step N (1-7)"
+        echo "  --skip-prereq, -n     Skip prerequisite installation"
         echo "  --help, -h           Show this help message"
         echo ""
         echo "Steps:"
@@ -708,6 +752,13 @@ main() {
   echo ""
 
   detect_os
+
+  # Install prerequisites first (unless skipped)
+  if [[ "$skip_prereq" != true ]]; then
+    install_prerequisites
+  else
+    info "Skipping prerequisite installation (--skip-prereq)"
+  fi
 
   # Step 1: Update packages (start_step=1)
   if [[ $start_step -le 1 ]] && ! skip_if_completed "step_1"; then
