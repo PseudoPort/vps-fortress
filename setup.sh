@@ -446,8 +446,18 @@ step_6_fail2ban() {
             dnf install -y fail2ban
           else
             warn "COPR not available, trying alternative installation..."
-            # Install dependencies without failing
-            dnf install -y python3 python3-pip python3-pyinotify 2>/dev/null || true
+            # Install pip3 if not available
+            info "Installing pip3..."
+            if ! command -v pip3 &>/dev/null; then
+              dnf install -y python3-pip 2>/dev/null || {
+                # Try curl method if dnf fails
+                curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+                python3 /tmp/get-pip.py
+                rm -f /tmp/get-pip.py
+              }
+            fi
+            # Install dependencies
+            dnf install -y python3 python3-pyinotify 2>/dev/null || true
             # Download and install fail2ban from source using pip
             cd /tmp
             FAIL2BAN_VERSION=$(curl -s https://api.github.com/repos/fail2ban/fail2ban/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | cut -dv -f2)
