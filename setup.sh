@@ -676,12 +676,16 @@ PYEOF
       sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
       systemctl daemon-reload
       systemctl restart fail2ban
-    else
-      # Service is already properly configured, just reload to apply config changes
+    elif systemctl is-active fail2ban &>/dev/null; then
+      # Fail2Ban is already running via systemd, just reload to apply config changes
+      info "Fail2Ban is running, reloading configuration..."
       if ! fail2ban-client reload 2>/dev/null; then
         info "Reload failed, trying restart..."
         systemctl restart fail2ban
       fi
+    else
+      # Service exists but not running, start it
+      systemctl start fail2ban
     fi
   else
     # Manual restart
