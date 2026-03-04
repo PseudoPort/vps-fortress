@@ -587,7 +587,7 @@ FAIL2BANEOF
   mkdir -p /etc/systemd/system/fail2ban.service.d
   cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'EOF'
 [Service]
-ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/bin/fail2ban-client ping || exit 1'
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/local/bin/fail2ban-client ping || exit 1'
 EOF
   info "Reloading systemd daemon to apply override..."
   systemctl daemon-reload
@@ -687,7 +687,7 @@ PYEOF
       mkdir -p /etc/systemd/system/fail2ban.service.d
       cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'EOF'
 [Service]
-ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/bin/fail2ban-client ping || exit 1'
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/local/bin/fail2ban-client ping || exit 1'
 EOF
     fi
     # Make sure the service file has PYTHONPATH
