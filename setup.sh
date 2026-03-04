@@ -539,7 +539,9 @@ step_6_fail2ban() {
               # Remove any conflicting SysV script
               rm -f /etc/init.d/fail2ban
               systemctl daemon-reload
-              systemctl enable --now fail2ban
+              if ! systemctl enable --now fail2ban; then
+                warn "Failed to start fail2ban via systemd, will retry after configuration..."
+              fi
             else
               warn "systemd service file not found, creating custom service..."
               # Create custom service file with PYTHONPATH
@@ -560,7 +562,9 @@ FAIL2BANEOF
               rm -f /etc/init.d/fail2ban
               mkdir -p /run/fail2ban /var/log/fail2ban
               systemctl daemon-reload
-              systemctl enable --now fail2ban
+              if ! systemctl enable --now fail2ban; then
+                warn "Failed to start fail2ban via systemd, will retry after configuration..."
+              fi
             fi
             
             cd /tmp
