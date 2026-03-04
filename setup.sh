@@ -582,6 +582,17 @@ FAIL2BANEOF
       ;;
   esac
 
+  # Apply fail2ban race condition fix - create systemd override to wait for socket
+  info "Applying fail2ban race condition fix..."
+  mkdir -p /etc/systemd/system/fail2ban.service.d
+  cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'EOF'
+[Service]
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/bin/fail2ban-client ping || exit 1'
+EOF
+  info "Reloading systemd daemon to apply override..."
+  systemctl daemon-reload
+  success "Fail2ban race condition fix applied."
+
   # Enable and start Fail2Ban service (only if not already handled in install)
   # Skip if systemd service was already started in install phase
   if systemctl is-active fail2ban &>/dev/null; then
@@ -670,30 +681,25 @@ PYEOF
 
   info "Restarting Fail2Ban..."
   if systemctl list-unit-files | grep -q fail2ban.service; then
+    # Ensure override is in place (race condition fix)
+    if [[ ! -f /etc/systemd/system/fail2ban.service.d/override.conf ]]; then
+      info "Recreating fail2ban race condition fix..."
+      mkdir -p /etc/systemd/system/fail2ban.service.d
+      cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'EOF'
+[Service]
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/bin/fail2ban-client ping || exit 1'
+EOF
+    fi
     # Make sure the service file has PYTHONPATH
     if ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service 2>/dev/null; then
       info "Adding PYTHONPATH to existing fail2ban.service..."
       sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
-      systemctl daemon-reload
-      systemctl restart fail2ban
-    elif systemctl is-active fail2ban &>/dev/null; then
-      # Fail2Ban is already running via systemd, just reload to apply config changes
-      info "Fail2Ban is running, reloading configuration..."
-      if ! fail2ban-client reload 2>/dev/null; then
-        info "Reload failed, trying restart..."
-        systemctl restart fail2ban
-      fi
-    else
-      # Service exists but not running, start it
-      systemctl start fail2ban
     fi
+    systemctl daemon-reload
+    systemctl restart fail2ban
   else
-    # Manual restart
-    pkill -f fail2ban-server 2>/dev/null || true
-    sleep 1
-    mkdir -p /run/fail2ban /var/log/fail2ban
-    PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
-    sleep 2
+    # Service exists but not running, start it
+    systemctl start fail2ban
   fi
   success "Fail2Ban configured and restarted."
 }
