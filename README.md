@@ -77,6 +77,8 @@ Step 3: Configure SSH Key Authentication
 
 Before disabling password logins, you must ensure your new user can log in using an SSH key.
 
+If you're using `setup.sh`, it handles this step interactively: paste a public key, use `gh:<username>` to fetch GitHub public keys, or provide an HTTPS key URL. The manual instructions below are for users following the guide by hand.
+
 1.  Switch to your new user:
 
 ```

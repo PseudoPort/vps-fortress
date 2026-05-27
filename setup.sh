@@ -284,6 +284,255 @@ step_2_create_user() {
 }
 
 # -----------------------------------------------------------------------------
+# Step 3 helpers: paste / validate / fingerprint a public key
+# -----------------------------------------------------------------------------
+
+# Read a multi-line paste from stdin, terminated by a blank line or EOF.
+# Strips CR and trailing whitespace per line. Echoes the last non-empty line
+# (the candidate key). Long RSA keys often wrap; users are instructed to paste
+# without wrapping, but we also accept the last logical line as the key.
+read_pubkey_block() {
+  local line last=""
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [[ -z "$line" ]]; then
+      [[ -n "$last" ]] && break
+      continue
+    fi
+    last="$line"
+  done
+  printf '%s' "$last"
+}
+
+# Validate a candidate public key string. Returns 0 on success, non-zero on
+# failure (and emits a warn explaining why).
+validate_pubkey() {
+  local key="$1"
+  if [[ -z "$key" ]]; then
+    warn "No key entered."
+    return 1
+  fi
+
+  local prefix="${key%% *}"
+  case "$prefix" in
+    ssh-rsa|ssh-ed25519|ssh-dss| \
+    ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521| \
+    sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) ;;
+    *)
+      warn "Unrecognized key type '${prefix}'. Expected ssh-rsa, ssh-ed25519, ecdsa-*, or sk-* key."
+      return 1
+      ;;
+  esac
+
+  local rest="${key#"$prefix" }"
+  local body="${rest%% *}"
+  if [[ ${#body} -lt 68 ]]; then
+    warn "Key body is suspiciously short (${#body} chars). Please paste the full key on a single line."
+    return 1
+  fi
+  if [[ ! "$body" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+    warn "Key body contains non-base64 characters. The paste may have wrapped or been truncated."
+    return 1
+  fi
+  return 0
+}
+
+# Print a confirmation preview for a public key: type, fingerprint, comment.
+# Falls back to a truncated body preview if ssh-keygen is unavailable.
+pubkey_fingerprint() {
+  local key="$1"
+  local tmp
+  tmp="$(mktemp)"
+  printf '%s\n' "$key" > "$tmp"
+
+  if command -v ssh-keygen &>/dev/null; then
+    local out
+    if out="$(ssh-keygen -lf "$tmp" 2>/dev/null)"; then
+      rm -f "$tmp"
+      printf '  %s\n' "$out"
+      return 0
+    fi
+  fi
+
+  rm -f "$tmp"
+  local prefix="${key%% *}"
+  local rest="${key#"$prefix" }"
+  local body="${rest%% *}"
+  local comment="${rest#"$body"}"
+  comment="${comment# }"
+  printf '  type=%s body=%s... comment=%s\n' \
+    "$prefix" "${body:0:40}" "${comment:-<none>}"
+}
+
+confirm_pubkey() {
+  local key="$1"
+  local confirm=""
+
+  echo ""
+  info "Public key preview:"
+  pubkey_fingerprint "$key"
+  echo ""
+
+  read -rp "Add this key to authorized_keys? [Y/n]: " confirm
+  confirm="${confirm:-Y}"
+  [[ "$confirm" =~ ^[Yy]$ ]]
+}
+
+FETCHED_PUBKEYS=()
+SELECTED_PUBKEY=""
+
+fetch_pubkeys_from_url() {
+  local url="$1"
+  local response line valid_count=0
+  FETCHED_PUBKEYS=()
+
+  if [[ ! "$url" =~ ^https:// ]]; then
+    warn "Only HTTPS key URLs are allowed."
+    return 1
+  fi
+  if ! command -v curl &>/dev/null; then
+    warn "curl is required to fetch public keys. Falling back to paste mode."
+    return 1
+  fi
+  if ! response="$(curl -fsSL --max-time 10 --max-filesize 65536 "$url")"; then
+    warn "Could not fetch public keys from ${url}."
+    return 1
+  fi
+  if [[ -z "$response" ]]; then
+    warn "No public keys found at ${url}."
+    return 1
+  fi
+
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    if validate_pubkey "$line" >/dev/null 2>&1; then
+      FETCHED_PUBKEYS+=("$line")
+      ((valid_count++)) || true
+    fi
+  done <<< "$response"
+
+  if [[ $valid_count -eq 0 ]]; then
+    warn "Fetched data did not contain any valid SSH public keys."
+    return 1
+  fi
+}
+
+fetch_pubkeys_from_source() {
+  local source="$1"
+  local url=""
+
+  case "$source" in
+    gh:*)
+      local username="${source#gh:}"
+      if [[ ! "$username" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+        warn "Invalid GitHub username '${username}'."
+        return 1
+      fi
+      url="https://github.com/${username}.keys"
+      ;;
+    url:https://*)
+      url="${source#url:}"
+      ;;
+    https://*)
+      url="$source"
+      ;;
+    *)
+      warn "Unknown key source '${source}'. Use paste, gh:<username>, or https://..."
+      return 1
+      ;;
+  esac
+
+  fetch_pubkeys_from_url "$url"
+}
+
+select_fetched_pubkey() {
+  local source="$1"
+  local choice=""
+  SELECTED_PUBKEY=""
+
+  fetch_pubkeys_from_source "$source" || return 1
+
+  if [[ ${#FETCHED_PUBKEYS[@]} -eq 1 ]]; then
+    SELECTED_PUBKEY="${FETCHED_PUBKEYS[0]}"
+    return 0
+  fi
+
+  echo ""
+  info "Found ${#FETCHED_PUBKEYS[@]} valid public keys. Choose one to install:"
+  local i
+  for i in "${!FETCHED_PUBKEYS[@]}"; do
+    printf '  [%d]\n' "$((i + 1))"
+    pubkey_fingerprint "${FETCHED_PUBKEYS[$i]}"
+  done
+  echo ""
+
+  while true; do
+    read -rp "Enter key number [1-${#FETCHED_PUBKEYS[@]}]: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#FETCHED_PUBKEYS[@]} )); then
+      SELECTED_PUBKEY="${FETCHED_PUBKEYS[$((choice - 1))]}"
+      return 0
+    fi
+    warn "Please enter a number between 1 and ${#FETCHED_PUBKEYS[@]}."
+  done
+}
+
+read_pubkey_interactively() {
+  local pub_key=""
+  SELECTED_PUBKEY=""
+
+  while true; do
+    echo ""
+    info "Paste your local machine's SSH public key, then press ENTER on a blank line."
+    info "Accepted formats: ssh-rsa, ssh-ed25519, ecdsa-sha2-nistp256/384/521, sk-* hardware keys."
+    echo ""
+
+    pub_key="$(read_pubkey_block)"
+    validate_pubkey "$pub_key" || continue
+
+    if confirm_pubkey "$pub_key"; then
+      SELECTED_PUBKEY="$pub_key"
+      return 0
+    fi
+    warn "Key not confirmed. Let's try again."
+  done
+}
+
+choose_pubkey() {
+  local source=""
+
+  while true; do
+    echo ""
+    info "Choose how to provide your SSH public key:"
+    info "  paste              Paste the key manually (default)"
+    info "  gh:<username>      Fetch public keys from GitHub"
+    info "  https://...        Fetch public keys from an HTTPS URL"
+    read -rp "Public key source [paste]: " source
+    source="${source:-paste}"
+
+    if [[ "$source" == "paste" ]]; then
+      read_pubkey_interactively
+      return 0
+    fi
+
+    if select_fetched_pubkey "$source"; then
+      validate_pubkey "$SELECTED_PUBKEY" || continue
+      if confirm_pubkey "$SELECTED_PUBKEY"; then
+        return 0
+      fi
+      warn "Key not confirmed. Let's try again."
+    else
+      warn "Falling back to manual paste."
+      read_pubkey_interactively
+      return 0
+    fi
+  done
+}
+
+# -----------------------------------------------------------------------------
 # Step 3: Configure SSH Key Authentication
 # -----------------------------------------------------------------------------
 step_3_ssh_key_auth() {
@@ -292,35 +541,16 @@ step_3_ssh_key_auth() {
   local ssh_dir="/home/${NEW_USER}/.ssh"
   local auth_keys="${ssh_dir}/authorized_keys"
 
-  # Create .ssh directory
   mkdir -p "$ssh_dir"
   chmod 700 "$ssh_dir"
   chown "${NEW_USER}:${NEW_USER}" "$ssh_dir"
 
-  # Prompt for public key
-  echo ""
-  info "Paste your local machine's SSH public key below."
-  info "It typically starts with 'ssh-rsa', 'ssh-ed25519', or 'ecdsa-sha2-nistp256'."
-  info "Press ENTER twice when done."
-  echo ""
+  choose_pubkey
 
-  local pub_key=""
-  while true; do
-    read -rp "Public key: " pub_key
-    if [[ -z "$pub_key" ]]; then
-      warn "No key entered. Please paste your public SSH key."
-    elif [[ "$pub_key" != ssh-* && "$pub_key" != ecdsa-* ]]; then
-      warn "Key does not appear to be a valid SSH public key. Please try again."
-    else
-      break
-    fi
-  done
-
-  # Append key (avoid duplicates)
-  if [[ -f "$auth_keys" ]] && grep -qF "$pub_key" "$auth_keys"; then
+  if [[ -f "$auth_keys" ]] && grep -qF "$SELECTED_PUBKEY" "$auth_keys"; then
     warn "Public key already present in authorized_keys. Skipping."
   else
-    echo "$pub_key" >> "$auth_keys"
+    echo "$SELECTED_PUBKEY" >> "$auth_keys"
     success "Public key added to ${auth_keys}."
   fi
 
