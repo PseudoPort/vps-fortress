@@ -48,7 +48,7 @@ Everything else in the current script ships as-is for v1.
 | # | Milestone | Outcome | Status | Plan |
 |---|---|---|---|---|
 | 1 | Smooth public-key onboarding | A solo developer gets their public key onto the new server during the script run without typos, line-wrap failures, or aborting to a second terminal — and a malformed key cannot brick the server. | in-progress | `.claude/plans/vps-fortress.plan.md` |
-| 2 | Resolve SSH port strategy | A solo developer running with no flags gets a non-default SSH port without having to think about it; power users can still pin a specific port. | pending | — |
+| 2 | Resolve SSH port strategy | A solo developer running with no flags gets a non-default SSH port without having to think about it; power users can still pin a specific port. | in-progress | `.claude/plans/vps-fortress-ssh-port.plan.md` |
 
 ## Open Questions
 - [ ] **SSH port: prompt, randomize, or both?** Current script prompts (default 2222). Randomizing by default removes a decision point and matches the "simpler" differentiator. Devil's-advocate default: **randomize in [10000–65535] by default, accept `--ssh-port=N` to override, drop the interactive prompt.** Confirm in `/plan` before implementing.

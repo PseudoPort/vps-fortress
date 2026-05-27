@@ -122,6 +122,8 @@ Step 4: Harden SSH Configuration
 
 Now that you have key-based access for a non-root user, you need to secure the SSH daemon to prevent brute-force attacks.
 
+If you're using `setup.sh`, the SSH port is randomized in `[10000, 65535]` by default; the Step 4 prompt shows the random pick, and pressing Enter accepts it. Pin a specific port with `--ssh-port=N` (or `-p N`) for non-interactive runs. The manual instructions below pick `2222` as an example for users following the guide by hand.
+
 Open the SSH configuration file:
 
 ```

@@ -561,6 +561,34 @@ step_3_ssh_key_auth() {
 }
 
 # -----------------------------------------------------------------------------
+# Step 4 helpers
+# -----------------------------------------------------------------------------
+
+# Pick a random SSH port in [10000, 65535]. Best-effort avoid ports already
+# listening locally. Echoes the port; never fails (the prompt is the safety
+# net if the rare collision-exhaustion case happens).
+pick_random_ssh_port() {
+  local min=10000 max=65535 candidate="" attempt
+  for attempt in 1 2 3 4 5; do
+    if command -v shuf &>/dev/null; then
+      candidate="$(shuf -i ${min}-${max} -n 1)"
+    else
+      candidate="$(awk -v min="$min" -v max="$max" \
+        'BEGIN{srand(); print int(min + rand() * (max - min + 1))}')"
+    fi
+    if command -v ss &>/dev/null; then
+      if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${candidate}\$"; then
+        continue
+      fi
+    fi
+    printf '%s' "$candidate"
+    return 0
+  done
+  warn "Could not find a free random port after 5 attempts; offering ${candidate} anyway."
+  printf '%s' "$candidate"
+}
+
+# -----------------------------------------------------------------------------
 # Step 4: Harden SSH Configuration
 # -----------------------------------------------------------------------------
 step_4_harden_ssh() {
@@ -568,16 +596,23 @@ step_4_harden_ssh() {
 
   local sshd_config="/etc/ssh/sshd_config"
 
-  # Prompt for custom SSH port
-  while true; do
-    read -rp "Enter custom SSH port [default: 2222]: " SSH_PORT
-    SSH_PORT="${SSH_PORT:-2222}"
-    if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1024 && SSH_PORT <= 65535 )); then
-      break
-    else
-      warn "Port must be a number between 1024 and 65535."
-    fi
-  done
+  # Resolve SSH_PORT: --ssh-port flag wins; otherwise prompt with a random default.
+  if [[ -n "${SSH_PORT_FLAG:-}" ]]; then
+    SSH_PORT="$SSH_PORT_FLAG"
+    info "Using SSH port ${SSH_PORT} (from --ssh-port)"
+  else
+    local default_port
+    default_port="$(pick_random_ssh_port)"
+    while true; do
+      read -rp "Enter custom SSH port [default: ${default_port}]: " SSH_PORT
+      SSH_PORT="${SSH_PORT:-$default_port}"
+      if [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 1024 && SSH_PORT <= 65535 )); then
+        break
+      else
+        warn "Port must be a number between 1024 and 65535."
+      fi
+    done
+  fi
 
   info "Backing up ${sshd_config} to ${sshd_config}.bak"
   cp "$sshd_config" "${sshd_config}.bak"
@@ -1012,7 +1047,8 @@ main() {
   local clear_state=false
   local start_step=1
   local skip_prereq=false
-  
+  SSH_PORT_FLAG=""
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --resume|-r)
@@ -1028,15 +1064,23 @@ main() {
       --skip-prereq|-n)
         skip_prereq=true
         ;;
+      --ssh-port=*)
+        SSH_PORT_FLAG="${1#*=}"
+        ;;
+      --ssh-port|-p)
+        SSH_PORT_FLAG="${2:-}"
+        shift
+        ;;
       --help|-h)
         echo "Usage: $0 [OPTIONS]"
         echo ""
         echo "Options:"
-        echo "  --resume, -r         Resume from previous interrupted run"
+        echo "  --resume, -r          Resume from previous interrupted run"
         echo "  --clear-state, -c     Clear state file and start fresh"
         echo "  --start-step, -s N    Start from step N (1-7)"
         echo "  --skip-prereq, -n     Skip prerequisite installation"
-        echo "  --help, -h           Show this help message"
+        echo "  --ssh-port, -p N      Set SSH port (1024-65535); skips the prompt"
+        echo "  --help, -h            Show this help message"
         echo ""
         echo "Steps:"
         echo "  1. Update System Packages"
@@ -1056,6 +1100,14 @@ main() {
     esac
     shift
   done
+
+  # Validate --ssh-port flag value
+  if [[ -n "$SSH_PORT_FLAG" ]]; then
+    if ! [[ "$SSH_PORT_FLAG" =~ ^[0-9]+$ ]] || (( SSH_PORT_FLAG < 1024 || SSH_PORT_FLAG > 65535 )); then
+      error "Invalid --ssh-port value '${SSH_PORT_FLAG}'. Must be a number between 1024 and 65535."
+      exit 1
+    fi
+  fi
 
   # Clear state if requested
   if [[ "$clear_state" == true ]]; then
