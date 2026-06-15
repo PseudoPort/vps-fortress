@@ -43,9 +43,15 @@ mark_step_completed() {
 
 get_step_info() {
   local step_name="$1"
-  if [[ -f "$STATE_FILE" ]]; then
-    grep -A1 "^${step_name}$" "$STATE_FILE" | tail -n1
-  fi
+  [[ -f "$STATE_FILE" ]] || return 0
+  # Robust to "step_3" with no extra info: the next line is the FOLLOWING step
+  # name, not data. Return only when the line immediately after is not itself
+  # a step_<n> token.
+  awk -v target="^${step_name}\$" '
+    $0 ~ target { found=1; next }
+    found && /^(step_[0-9]+|#|$)/ { exit }
+    found { print; exit }
+  ' "$STATE_FILE"
 }
 
 is_step_completed() {
@@ -254,7 +260,22 @@ step_2_create_user() {
       apt)
         info "Creating user '$NEW_USER' with adduser..."
         adduser --gecos "" "$NEW_USER"
+        # Debian minimal may ship without sudo at all; install it before
+        # modifying the group, otherwise `usermod -aG sudo` succeeds but the
+        # user still cannot escalate.
+        if ! command -v sudo &>/dev/null; then
+          info "Installing sudo (Debian minimal images often lack it)..."
+          apt install -y sudo
+        fi
         usermod -aG sudo "$NEW_USER"
+        # Same safety net as the dnf/pacman branch: make sure %sudo is
+        # actually uncommented in /etc/sudoers. This is a no-op on Ubuntu and
+        # a critical fix on stripped Debian images.
+        if ! grep -qE '^\s*%sudo\s+ALL=\(ALL(:ALL)?\)\s+ALL' /etc/sudoers; then
+          info "Enabling %sudo group in /etc/sudoers..."
+          sed -i 's/^#\s*%sudo\s\+ALL=(ALL)\s\+ALL/%sudo   ALL=(ALL:ALL) ALL/' /etc/sudoers
+          sed -i 's/^#\s*%sudo\s\+ALL=(ALL:ALL)\s\+ALL/%sudo   ALL=(ALL:ALL) ALL/' /etc/sudoers
+        fi
         ;;
       dnf|pacman)
         info "Creating user '$NEW_USER' with useradd..."
@@ -304,6 +325,91 @@ read_pubkey_block() {
     last="$line"
   done
   printf '%s' "$last"
+}
+
+# Resolve the concrete paths to fail2ban-server / fail2ban-client and the
+# Python site-packages dir that contains the `fail2ban` module. Sets globals:
+#   F2B_SERVER, F2B_CLIENT, F2B_PYTHONPATH
+# Source-install path (/usr/local/bin, /usr/local/lib/.../site-packages) wins
+# when both are present, mirroring the install order in step 6.
+detect_fail2ban_paths() {
+  local srv="/usr/local/bin/fail2ban-server"
+  local cli="/usr/local/bin/fail2ban-client"
+  if [[ ! -x "$srv" ]]; then srv="/usr/bin/fail2ban-server"; fi
+  if [[ ! -x "$cli" ]]; then cli="/usr/bin/fail2ban-client"; fi
+  F2B_SERVER="$(command -v fail2ban-server 2>/dev/null || echo "$srv")"
+  F2B_CLIENT="$(command -v fail2ban-client 2>/dev/null || echo "$cli")"
+  F2B_PYTHONPATH="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || echo "")"
+}
+
+# Restart the SSH service across the two unit names (ssh.service / sshd.service)
+# used by Debian/Ubuntu vs RHEL/Arch. Mirrors the safe-restart pattern used in
+# step 5 and do_rollback so all three call sites stay in sync.
+restart_ssh_service() {
+  if systemctl list-unit-files --no-legend ssh.service 2>/dev/null | grep -q '\.service'; then
+    systemctl restart ssh && { success "SSH service restarted (ssh)."; return 0; }
+  fi
+  if systemctl list-unit-files --no-legend sshd.service 2>/dev/null | grep -q '\.service'; then
+    systemctl restart sshd && { success "SSH service restarted (sshd)."; return 0; }
+  fi
+  # Last-ditch: try both, ignore failures
+  if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
+    return 0
+  fi
+  warn "Could not restart SSH service automatically. Please restart it manually."
+  return 1
+}
+
+# Last-resort fail2ban install: clone upstream, `python3 setup.py install`,
+# wire a systemd unit. Used only when both distro repo and EPEL lack the
+# package. Heavy + slow; emit a clear warning so the operator knows why this
+# path was taken.
+_fail2ban_install_from_source() {
+  command -v git    >/dev/null || dnf install -y git             2>/dev/null || { warn "git not available, source install aborted."; return 1; }
+  command -v python3>/dev/null || dnf install -y python3 python3-pyinotify 2>/dev/null || true
+
+  local workdir
+  workdir="$(mktemp -d)"
+  info "Cloning Fail2Ban into ${workdir}..."
+  if ! git clone --depth 1 https://github.com/fail2ban/fail2ban.git "${workdir}/fail2ban"; then
+    warn "git clone failed; aborting source install."
+    rm -rf "$workdir"
+    return 1
+  fi
+  ( cd "${workdir}/fail2ban" && python3 setup.py install )
+
+  # Re-resolve paths now that the install actually happened.
+  detect_fail2ban_paths
+
+  if [[ -f "${workdir}/fail2ban/build/fail2ban.service" ]]; then
+    sed -i "s|^ExecStart=.*|Environment=\"PYTHONPATH=${F2B_PYTHONPATH}\"\\nExecStart=${F2B_SERVER} -xf start|" \
+      "${workdir}/fail2ban/build/fail2ban.service"
+    cp "${workdir}/fail2ban/build/fail2ban.service" /etc/systemd/system/fail2ban.service
+  else
+    cat > /etc/systemd/system/fail2ban.service << EOF
+[Unit]
+Description=Fail2Ban Service
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=${F2B_SERVER} -xf start
+PIDFile=/var/run/fail2ban/fail2ban.pid
+Environment="PYTHONPATH=${F2B_PYTHONPATH}"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+
+  rm -f /etc/init.d/fail2ban
+  mkdir -p /run/fail2ban /var/log/fail2ban
+  systemctl daemon-reload
+  rm -rf "$workdir"
+  if ! systemctl enable --now fail2ban; then
+    warn "Failed to start fail2ban via systemd, will retry after configuration..."
+  fi
+  success "Fail2Ban installed from source."
 }
 
 # Validate a candidate public key string. Returns 0 on success, non-zero on
@@ -617,14 +723,18 @@ step_4_harden_ssh() {
   info "Backing up ${sshd_config} to ${sshd_config}.bak"
   cp "$sshd_config" "${sshd_config}.bak"
 
-  # Helper: set or replace a directive in sshd_config
+  # Helper: set or replace a directive in sshd_config.
+  # Only touches top-level (column-0) directives so Match blocks below are
+  # left alone. If the key appears in multiple Match blocks, those overrides
+  # intentionally win — that's the user's intent, not the script's to flatten.
   set_sshd_option() {
     local key="$1"
     local value="$2"
-    # Remove existing (commented or uncommented) lines for this key
-    sed -i "s/^\s*#\?\s*${key}\s.*/${key} ${value}/" "$sshd_config"
-    # If the key is not present at all, append it
-    if ! grep -qE "^\s*${key}\s" "$sshd_config"; then
+    # Replace any existing top-level (un-indented) directive, commented or not.
+    sed -i "s/^${key}[[:space:]].*/${key} ${value}/" "$sshd_config"
+    sed -i "s/^#[[:space:]]*${key}[[:space:]].*/${key} ${value}/" "$sshd_config"
+    # If the key is not present at all at top level, append it.
+    if ! grep -qE "^${key}[[:space:]]" "$sshd_config"; then
       echo "${key} ${value}" >> "$sshd_config"
     fi
   }
@@ -697,22 +807,16 @@ step_5_configure_firewall() {
 
   # Restart SSH service now that firewall is configured
   info "Restarting SSH service..."
-  if systemctl list-units --type=service | grep -q "^  ssh\.service"; then
-    systemctl restart ssh
-    success "SSH service restarted (ssh)."
-  elif systemctl list-units --type=service | grep -q "^  sshd\.service"; then
-    systemctl restart sshd
-    success "SSH service restarted (sshd)."
-  else
-    # Try both, ignore errors
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || warn "Could not restart SSH service automatically. Please restart it manually."
-  fi
+  restart_ssh_service
 
   warn "IMPORTANT: Do NOT close this session yet!"
   warn "Open a NEW terminal and verify you can connect with:"
   warn "  ssh -p ${SSH_PORT} ${NEW_USER}@<your_server_ip>"
   echo ""
-  read -rp "Press ENTER once you have confirmed the new SSH connection works, then this script will continue..."
+  # `|| true` because `read` returns non-zero on EOF (Ctrl-D); under `set -e`
+  # that would kill the script mid-confirmation. The second-terminal test is
+  # the actual safety net.
+  read -rp "Press ENTER once you have confirmed the new SSH connection works, then this script will continue..." || true
 }
 
 # -----------------------------------------------------------------------------
@@ -720,6 +824,15 @@ step_5_configure_firewall() {
 # -----------------------------------------------------------------------------
 step_6_fail2ban() {
   step "Step 6: Install and Configure Fail2Ban"
+
+  # Resolve concrete paths once per run. Source-install (/usr/local/...) wins
+  # over distro paths so the override and the install test always target the
+  # same binary — previously these were hardcoded to /usr/local/... which
+  # silently no-op'd on distro-package installs.
+  detect_fail2ban_paths
+  info "fail2ban-server: ${F2B_SERVER}"
+  info "fail2ban-client: ${F2B_CLIENT}"
+  [[ -n "$F2B_PYTHONPATH" ]] && info "fail2ban PYTHONPATH: ${F2B_PYTHONPATH}"
 
   # Check if Fail2Ban is already installed and offer to reinstall
   if command -v fail2ban-server &>/dev/null || command -v fail2ban-client &>/dev/null; then
@@ -761,128 +874,74 @@ step_6_fail2ban() {
     apt)
       info "Installing Fail2Ban..."
       apt install -y fail2ban
-      # Ensure PYTHONPATH in systemd service if fail2ban was installed from source earlier
-      if [[ -f /etc/systemd/system/fail2ban.service ]] && ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service; then
-        sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
-        systemctl daemon-reload
-      fi
       ;;
     dnf)
       info "Installing Fail2Ban..."
-      # Try installing fail2ban directly, EPEL might not be needed on all RHEL derivatives
-      if ! dnf install -y fail2ban 2>/dev/null; then
-        # Try EPEL if direct install fails
-        info "Trying EPEL repository..."
-        if dnf install -y epel-release 2>/dev/null; then
-          dnf install -y fail2ban
-        else
-          # Try alternative: install from copr or source
-          warn "EPEL not available, trying COPR repository..."
-          if dnf copr enable -y @fail2ban/fail2ban 2>/dev/null; then
-            dnf install -y fail2ban
-          else
-            warn "COPR not available, trying alternative installation..."
-            # Install git if not available
-            dnf install -y git 2>/dev/null || true
-            # Install dependencies
-            dnf install -y python3 python3-pyinotify 2>/dev/null || true
-            # Clone and install fail2ban from source using setup.py (per official docs)
-            cd /tmp
-            info "Cloning Fail2Ban from GitHub and installing..."
-            rm -rf fail2ban 2>/dev/null || true
-            git clone https://github.com/fail2ban/fail2ban.git
-            cd fail2ban
-            python3 setup.py install
-            
-            # Install systemd service file from build directory (per official docs)
-            info "Installing Fail2Ban systemd service..."
-            if [[ -f build/fail2ban.service ]]; then
-              # Add PYTHONPATH to find the fail2ban module
-              # Use more robust sed that handles various ExecStart formats
-              sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' build/fail2ban.service
-              cp build/fail2ban.service /etc/systemd/system/fail2ban.service
-              # Remove any conflicting SysV script
-              rm -f /etc/init.d/fail2ban
-              systemctl daemon-reload
-              if ! systemctl enable --now fail2ban; then
-                warn "Failed to start fail2ban via systemd, will retry after configuration..."
-              fi
-            else
-              warn "systemd service file not found, creating custom service..."
-              # Create custom service file with PYTHONPATH
-              cat > /etc/systemd/system/fail2ban.service << 'FAIL2BANEOF'
-[Unit]
-Description=Fail2Ban Service
-After=network.target
-
-[Service]
-Type=forking
-ExecStart=/usr/local/bin/fail2ban-server -xf start
-PIDFile=/var/run/fail2ban/fail2ban.pid
-Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"
-
-[Install]
-WantedBy=multi-user.target
-FAIL2BANEOF
-              rm -f /etc/init.d/fail2ban
-              mkdir -p /run/fail2ban /var/log/fail2ban
-              systemctl daemon-reload
-              if ! systemctl enable --now fail2ban; then
-                warn "Failed to start fail2ban via systemd, will retry after configuration..."
-              fi
-            fi
-            
-            cd /tmp
-            rm -rf fail2ban
-            
-            success "Fail2Ban installed and started."
-          fi
-        fi
+      # Order: distro repo → EPEL → source. Source is last resort because the
+      # git+setup.py path is slow, fragile, and pulls PyPI deps on a fresh VPS.
+      # `dnf install fail2ban` covers RHEL 9+ (BaseOS) and Alma/Rocky 9+ once
+      # EPEL is enabled. The previous @fail2ban/fail2ban COPR is gone, so we
+      # no longer probe it.
+      if dnf install -y fail2ban 2>/dev/null; then
+        :
+      elif dnf install -y epel-release 2>/dev/null && dnf install -y fail2ban 2>/dev/null; then
+        :
+      else
+        warn "fail2ban not in distro/EPEL repos — falling back to source install."
+        _fail2ban_install_from_source
       fi
       ;;
     pacman)
       info "Installing Fail2Ban..."
       pacman -S --noconfirm fail2ban
-      # Ensure PYTHONPATH in systemd service if fail2ban was installed from source earlier
-      if [[ -f /etc/systemd/system/fail2ban.service ]] && ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service; then
-        sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
-        systemctl daemon-reload
-      fi
       ;;
   esac
+
+  # PYTHONPATH fixup for the SOURCE-install path. Distro packages put the
+  # module in dist-packages under the system python and don't need this.
+  if [[ -f /etc/systemd/system/fail2ban.service ]] \
+      && [[ ! -f /usr/lib/systemd/system/fail2ban.service ]] \
+      && ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service 2>/dev/null; then
+    info "Patching source-install fail2ban.service with PYTHONPATH..."
+    sed -i "s|^ExecStart=.*|Environment=\"PYTHONPATH=${F2B_PYTHONPATH}\"\\nExecStart=${F2B_SERVER} -xf start|" \
+      /etc/systemd/system/fail2ban.service
+    systemctl daemon-reload
+  fi
 
   # Apply fail2ban race condition fix - create systemd override to wait for socket
   info "Applying fail2ban race condition fix..."
   mkdir -p /etc/systemd/system/fail2ban.service.d
-  cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'EOF'
+  cat > /etc/systemd/system/fail2ban.service.d/override.conf << EOF
 [Service]
-ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/local/bin/fail2ban-client ping || exit 1'
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; ${F2B_CLIENT} ping || exit 1'
 EOF
   info "Reloading systemd daemon to apply override..."
   systemctl daemon-reload
   success "Fail2ban race condition fix applied."
 
   # Enable and start Fail2Ban service (only if not already handled in install)
-  # Skip if systemd service was already started in install phase
   if systemctl is-active fail2ban &>/dev/null; then
     success "Fail2Ban is already running via systemd."
   elif pgrep -f fail2ban-server > /dev/null; then
     success "Fail2Ban is already running."
   else
-    # Try systemd first
-    if systemctl list-unit-files | grep -q fail2ban.service; then
+    if systemctl list-unit-files --no-legend fail2ban.service 2>/dev/null | grep -q '\.service'; then
       info "Testing Fail2Ban configuration..."
-      if ! PYTHONPATH=/usr/local/lib/python3.11/site-packages /usr/local/bin/fail2ban-server -t 2>&1; then
+      if ! PYTHONPATH="${F2B_PYTHONPATH}" "${F2B_SERVER}" -t 2>&1; then
         warn "Fail2Ban configuration test failed, attempting to fix..."
         mkdir -p /run/fail2ban /var/log/fail2ban
         chmod 755 /run/fail2ban /var/log/fail2ban
       fi
       systemctl start fail2ban
     else
-      # Manual start as fallback
+      # Manual start as fallback (no systemd unit). The previous version
+      # backgrounded with `nohup ... &` but did not `disown`, so the child was
+      # tied to the script's session; we add `disown` and run from /root so
+      # relative paths in the unit resolve cleanly.
       info "Starting Fail2Ban server manually..."
       mkdir -p /run/fail2ban /var/log/fail2ban
-      PYTHONPATH=/usr/local/lib/python3.11/site-packages nohup /usr/local/bin/fail2ban-server -xf start > /var/log/fail2ban/fail2ban.log 2>&1 &
+      ( cd /root && nohup env "PYTHONPATH=${F2B_PYTHONPATH}" "${F2B_SERVER}" -xf start \
+          > /var/log/fail2ban/fail2ban.log 2>&1 & disown ) || true
       sleep 2
     fi
   fi
@@ -911,18 +970,21 @@ EOF
   fi
   info "Using SSH log file: $sshd_log"
 
-  # Remove any existing [sshd] block and re-insert a clean one
-  python3 - <<PYEOF
+  # Remove any existing [sshd] block and re-insert a clean one. The old
+  # `sed` approach couldn't safely rewrite the block boundaries, and the
+  # previous f-string heredoc leaked variables through shell interpolation;
+  # the standalone script reads the file from disk, which is the only safe
+  # boundary.
+  python3 - <<'PYEOF' "$jail_local" "$sshd_log" "$SSH_PORT"
 import re, sys
 
-jail_local = "${jail_local}"
-sshd_log = "${sshd_log}"
-ssh_port = "${SSH_PORT}"
+jail_local, sshd_log, ssh_port = sys.argv[1], sys.argv[2], sys.argv[3]
 
 with open(jail_local, "r") as f:
     content = f.read()
 
 sshd_block = f"""
+
 [sshd]
 enabled  = true
 port     = {ssh_port}
@@ -937,7 +999,7 @@ content = re.sub(
     r'\[sshd\].*?(?=\n\[|\Z)',
     '',
     content,
-    flags=re.DOTALL
+    flags=re.DOTALL,
 )
 
 content = content.rstrip() + "\n" + sshd_block
@@ -949,20 +1011,23 @@ print("jail.local updated successfully.")
 PYEOF
 
   info "Restarting Fail2Ban..."
-  if systemctl list-unit-files | grep -q fail2ban.service; then
+  if systemctl list-unit-files --no-legend fail2ban.service 2>/dev/null | grep -q '\.service'; then
     # Ensure override is in place (race condition fix)
     if [[ ! -f /etc/systemd/system/fail2ban.service.d/override.conf ]]; then
       info "Recreating fail2ban race condition fix..."
       mkdir -p /etc/systemd/system/fail2ban.service.d
-      cat > /etc/systemd/system/fail2ban.service.d/override.conf << 'EOF'
+      cat > /etc/systemd/system/fail2ban.service.d/override.conf << EOF
 [Service]
-ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; /usr/local/bin/fail2ban-client ping || exit 1'
+ExecStartPost=/bin/bash -c 'for i in {1..30}; do test -S /var/run/fail2ban/fail2ban.sock && break; sleep 0.5; done; ${F2B_CLIENT} ping || exit 1'
 EOF
     fi
-    # Make sure the service file has PYTHONPATH
-    if ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service 2>/dev/null; then
+    # Make sure the service file has PYTHONPATH (source-install only)
+    if [[ -f /etc/systemd/system/fail2ban.service ]] \
+        && [[ ! -f /usr/lib/systemd/system/fail2ban.service ]] \
+        && ! grep -q 'PYTHONPATH' /etc/systemd/system/fail2ban.service 2>/dev/null; then
       info "Adding PYTHONPATH to existing fail2ban.service..."
-      sed -i 's|^ExecStart=.*|Environment="PYTHONPATH=/usr/local/lib/python3.11/site-packages"\nExecStart=/usr/local/bin/fail2ban-server -xf start|' /etc/systemd/system/fail2ban.service
+      sed -i "s|^ExecStart=.*|Environment=\"PYTHONPATH=${F2B_PYTHONPATH}\"\\nExecStart=${F2B_SERVER} -xf start|" \
+        /etc/systemd/system/fail2ban.service
     fi
     systemctl daemon-reload
     systemctl restart fail2ban
@@ -1017,7 +1082,6 @@ step_7_auto_updates() {
   esac
 }
 
-# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # Rollback: restore SSH access from sshd_config.bak
 # -----------------------------------------------------------------------------
@@ -1149,6 +1213,8 @@ MANUAL
   echo ""
   echo -e "${BOLD}${GREEN}============================================================${RESET}"
 }
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 print_summary() {
@@ -1248,6 +1314,12 @@ main() {
       error "Invalid --ssh-port value '${SSH_PORT_FLAG}'. Must be a number between 1024 and 65535."
       exit 1
     fi
+  fi
+
+  # Validate --start-step: must be 1..7
+  if ! [[ "$start_step" =~ ^[0-9]+$ ]] || (( start_step < 1 || start_step > 7 )); then
+    error "Invalid --start-step value '${start_step}'. Must be an integer between 1 and 7."
+    exit 1
   fi
 
   # Clear state if requested
