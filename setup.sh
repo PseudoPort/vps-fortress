@@ -1018,6 +1018,137 @@ step_7_auto_updates() {
 }
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Rollback: restore SSH access from sshd_config.bak
+# -----------------------------------------------------------------------------
+do_rollback() {
+  local sshd_config="/etc/ssh/sshd_config"
+  local sshd_bak="${sshd_config}.bak"
+  local saved_port=""
+
+  step "Rollback: restore SSH access on port 22"
+
+  # Recover the custom SSH port (best-effort; used for firewall cleanup).
+  saved_port="$(get_step_info "step_4" || true)"
+  if [[ -z "$saved_port" && -n "${SSH_PORT_FLAG:-}" ]]; then
+    saved_port="$SSH_PORT_FLAG"
+  fi
+  if [[ -n "$saved_port" ]]; then
+    info "Recovered custom SSH port from state: ${saved_port}"
+  else
+    info "No recorded SSH port — will not remove a custom port from the firewall."
+  fi
+
+  # Confirmation gate (skipped under --yes).
+  if [[ "${ASSUME_YES:-false}" != true ]]; then
+    echo ""
+    warn "This will:"
+    warn "  - Restore ${sshd_bak} → ${sshd_config} (re-enables port 22 and password auth)"
+    if [[ -n "$saved_port" && "$saved_port" != "22" ]]; then
+      warn "  - Reopen 22/tcp and remove ${saved_port}/tcp from the firewall"
+    else
+      warn "  - Reopen 22/tcp in the firewall"
+    fi
+    warn "  - Stop fail2ban and unban all currently banned IPs"
+    warn "  - Restart sshd"
+    warn "User account, packages, and auto-updates are left intact."
+    echo ""
+    local confirm=""
+    read -rp "Proceed with rollback? [y/N]: " confirm
+    confirm="${confirm:-N}"
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      info "Rollback aborted."
+      return 1
+    fi
+  fi
+
+  # 1. Restore sshd_config from backup, or die with manual instructions.
+  if [[ -f "$sshd_bak" ]]; then
+    local bak_mtime
+    bak_mtime="$(stat -c '%y' "$sshd_bak" 2>/dev/null || stat -f '%Sm' "$sshd_bak" 2>/dev/null || echo unknown)"
+    info "Restoring ${sshd_bak} (mtime: ${bak_mtime}) → ${sshd_config}"
+    cp -p "$sshd_bak" "$sshd_config"
+    success "sshd_config restored."
+  else
+    error "${sshd_bak} not found — cannot auto-restore."
+    cat <<'MANUAL' >&2
+
+Manual recovery (run as root):
+  sed -i 's/^\s*Port .*/Port 22/' /etc/ssh/sshd_config
+  sed -i 's/^\s*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  sed -i 's/^\s*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  systemctl restart ssh 2>/dev/null || systemctl restart sshd
+  # Reopen port 22 in your firewall, e.g.:
+  #   ufw allow 22/tcp
+  #   firewall-cmd --permanent --add-port=22/tcp && firewall-cmd --reload
+MANUAL
+    die "Aborting rollback: no backup to restore."
+  fi
+
+  # 2. Firewall: reopen 22/tcp and (if known) remove the custom port.
+  case "${PKG_MANAGER:-}" in
+    apt|pacman)
+      if command -v ufw &>/dev/null; then
+        info "UFW: allow 22/tcp"
+        ufw allow 22/tcp || warn "ufw allow 22/tcp failed — check 'ufw status' manually."
+        if [[ -n "$saved_port" && "$saved_port" != "22" ]]; then
+          info "UFW: delete allow ${saved_port}/tcp"
+          ufw delete allow "${saved_port}/tcp" 2>/dev/null \
+            || warn "ufw delete allow ${saved_port}/tcp failed (rule may not exist)."
+        fi
+      else
+        warn "UFW not installed; skipping firewall changes."
+      fi
+      ;;
+    dnf)
+      if command -v firewall-cmd &>/dev/null; then
+        info "firewalld: --add-port=22/tcp (permanent)"
+        firewall-cmd --permanent --add-port=22/tcp \
+          || warn "firewall-cmd add-port=22/tcp failed."
+        if [[ -n "$saved_port" && "$saved_port" != "22" ]]; then
+          info "firewalld: --remove-port=${saved_port}/tcp (permanent)"
+          firewall-cmd --permanent --remove-port="${saved_port}/tcp" 2>/dev/null \
+            || warn "firewall-cmd remove-port=${saved_port}/tcp failed (rule may not exist)."
+        fi
+        firewall-cmd --reload || warn "firewall-cmd --reload failed."
+      else
+        warn "firewall-cmd not installed; skipping firewall changes."
+      fi
+      ;;
+    *)
+      warn "Unknown package manager '${PKG_MANAGER:-unset}'; skipping firewall changes."
+      ;;
+  esac
+
+  # 3. Fail2Ban: unban first (needs running daemon), then stop. Best-effort.
+  if [[ -z "${F2B_CLIENT:-}" ]]; then
+    detect_fail2ban_paths
+  fi
+  if [[ -x "$F2B_CLIENT" ]]; then
+    "$F2B_CLIENT" unban --all 2>/dev/null || true
+  fi
+  info "Stopping fail2ban..."
+  systemctl stop fail2ban 2>/dev/null || true
+
+  # 4. Restart sshd (shared helper from step 5).
+  info "Restarting SSH service..."
+  restart_ssh_service
+
+  # 5. Summary banner.
+  echo ""
+  echo -e "${BOLD}${GREEN}============================================================${RESET}"
+  echo -e "${BOLD}${GREEN}  Rollback Complete${RESET}"
+  echo -e "${BOLD}${GREEN}============================================================${RESET}"
+  echo ""
+  echo -e "  ${BOLD}SSH port:${RESET}       22 (restored from sshd_config.bak)"
+  echo -e "  ${BOLD}Password auth:${RESET}  Re-enabled (per restored config)"
+  echo -e "  ${BOLD}Fail2Ban:${RESET}       Stopped"
+  echo ""
+  echo -e "  ${YELLOW}Next:${RESET} log in on port 22, then re-run"
+  echo -e "         ${BOLD}sudo bash setup.sh${RESET} to harden again."
+  echo ""
+  echo -e "${BOLD}${GREEN}============================================================${RESET}"
+}
 # Summary
 # -----------------------------------------------------------------------------
 print_summary() {
@@ -1047,6 +1178,8 @@ main() {
   local clear_state=false
   local start_step=1
   local skip_prereq=false
+  local rollback=false
+  ASSUME_YES=false
   SSH_PORT_FLAG=""
 
   while [[ $# -gt 0 ]]; do
@@ -1071,6 +1204,12 @@ main() {
         SSH_PORT_FLAG="${2:-}"
         shift
         ;;
+      --rollback)
+        rollback=true
+        ;;
+      --yes|-y)
+        ASSUME_YES=true
+        ;;
       --help|-h)
         echo "Usage: $0 [OPTIONS]"
         echo ""
@@ -1080,6 +1219,8 @@ main() {
         echo "  --start-step, -s N    Start from step N (1-7)"
         echo "  --skip-prereq, -n     Skip prerequisite installation"
         echo "  --ssh-port, -p N      Set SSH port (1024-65535); skips the prompt"
+        echo "  --rollback            Restore sshd_config.bak, reopen port 22, stop fail2ban"
+        echo "  --yes, -y             Skip confirmation prompts (for --rollback)"
         echo "  --help, -h            Show this help message"
         echo ""
         echo "Steps:"
@@ -1136,6 +1277,12 @@ main() {
   echo ""
 
   detect_os
+
+  # Rollback path: restore SSH access and exit before touching the 7 steps.
+  if [[ "$rollback" == true ]]; then
+    do_rollback
+    exit $?
+  fi
 
   # Check prerequisites first
   check_prerequisites || install_prerequisites

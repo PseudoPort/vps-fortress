@@ -49,11 +49,12 @@ Everything else in the current script ships as-is for v1.
 |---|---|---|---|---|
 | 1 | Smooth public-key onboarding | A solo developer gets their public key onto the new server during the script run without typos, line-wrap failures, or aborting to a second terminal — and a malformed key cannot brick the server. | in-progress | `.claude/plans/vps-fortress.plan.md` |
 | 2 | Resolve SSH port strategy | A solo developer running with no flags gets a non-default SSH port without having to think about it; power users can still pin a specific port. | in-progress | `.claude/plans/vps-fortress-ssh-port.plan.md` |
+| 3 | Rollback safety net | A user with console/serial access can undo a botched run in <20 seconds with `setup.sh --rollback`: sshd_config.bak restored, port 22 reopened, fail2ban stopped, sshd restarted. | in-progress | `.claude/plans/vps-fortress-rollback.plan.md` |
 
 ## Open Questions
 - [ ] **SSH port: prompt, randomize, or both?** Current script prompts (default 2222). Randomizing by default removes a decision point and matches the "simpler" differentiator. Devil's-advocate default: **randomize in [10000–65535] by default, accept `--ssh-port=N` to override, drop the interactive prompt.** Confirm in `/plan` before implementing.
 - [ ] **Public-key onboarding mechanism.** Candidates: (a) keep paste flow but harden validation/preview (already partially done), (b) add `gh:<username>` shortcut that fetches `https://github.com/<username>.keys`, (c) accept arbitrary URL, (d) print copy-paste-ready `ssh-copy-id` instructions and pause. Pick one (or two with a fallback) in `/plan`.
-- [ ] **Rollback / safety net.** Out of scope for v1, but the failure mode (locked-out user on a $5 droplet) is severe. Worth ~20 lines of bash to add `setup.sh --rollback` that restores `sshd_config.bak`, reopens port 22, re-enables password auth? Decide before v2.
+- [ ] **Rollback / safety net.** ~~Out of scope for v1~~ — *resolved*: pulled in as Milestone 3, see `.claude/plans/vps-fortress-rollback.plan.md`. `setup.sh --rollback` restores `sshd_config.bak`, reopens port 22, removes the custom port from the firewall, stops fail2ban, and restarts sshd. Console/serial access required (does not rescue an SSH-only session locked out on the broken port — that constraint stays per the second-terminal verification gate).
 - [ ] **Adoption metric.** Build-time completion proves "it works"; it doesn't prove "people use it." Pick one post-launch signal: GitHub stars, self-reported completions via opt-in postrun ping, or qualitative reports. Decide before launch.
 - [ ] **Evidence is n=1 (author).** Worth a low-effort validation pass (one r/selfhosted thread, a HN Show post) before heavy investment beyond MVP.
 

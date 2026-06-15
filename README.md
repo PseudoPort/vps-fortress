@@ -309,6 +309,28 @@ systemctl enable --now dnf-automatic.timer
 
 ```
 
+Recovery: `setup.sh --rollback`
+---------------------------------
+
+If a `setup.sh` run leaves you locked out — wrong key, fat-fingered port, sshd refusing to start — `--rollback` undoes the SSH-locking changes in one shot.
+
+```
+sudo bash setup.sh --rollback           # prompts before touching anything
+sudo bash setup.sh --rollback --yes     # skip the prompt (over a flaky console)
+
+```
+
+What it does:
+
+-   Restores `/etc/ssh/sshd_config` from `/etc/ssh/sshd_config.bak` (port 22 + password auth back on).
+-   Reopens `22/tcp` in UFW or firewalld, and removes the custom port if it was recorded by Step 4.
+-   Stops Fail2Ban and unbans all currently banned IPs.
+-   Restarts sshd.
+
+What it does **not** touch: the new sudo user, installed packages, or Step 7 auto-updates — those aren't the bricking risk.
+
+Caveat: this is for **console / serial / hypervisor TTY access** (DigitalOcean droplet console, EC2 system console, etc.). It cannot rescue a session whose only path in is SSH on the broken port — the second-terminal verification in Step 5 is still your primary safety net. Run `--rollback`, log in on port 22, then re-run `sudo bash setup.sh` to harden again.
+
 License
 -------
 
