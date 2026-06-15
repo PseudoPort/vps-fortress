@@ -345,18 +345,90 @@ detect_fail2ban_paths() {
 # Restart the SSH service across the two unit names (ssh.service / sshd.service)
 # used by Debian/Ubuntu vs RHEL/Arch. Mirrors the safe-restart pattern used in
 # step 5 and do_rollback so all three call sites stay in sync.
+#
+# Why the verification + fallback layers: in one smoke test the script
+# restored sshd_config from .bak and called `systemctl restart ssh`; the
+# restart command reported success but sshd did not re-bind to the new
+# port, leaving the user locked out. Root cause was a stale child process
+# holding a port while the new master could not bind cleanly. The
+# fallbacks below handle that case: SIGHUP the existing master (reload
+# config without full restart), reset-failed + retry, and finally try
+# both unit names.
 restart_ssh_service() {
+  local sshd_unit=""
+
+  # Detect which service name is in use on this distro.
   if systemctl list-unit-files --no-legend ssh.service 2>/dev/null | grep -q '\.service'; then
-    systemctl restart ssh && { success "SSH service restarted (ssh)."; return 0; }
+    sshd_unit="ssh"
+  elif systemctl list-unit-files --no-legend sshd.service 2>/dev/null | grep -q '\.service'; then
+    sshd_unit="sshd"
   fi
-  if systemctl list-unit-files --no-legend sshd.service 2>/dev/null | grep -q '\.service'; then
-    systemctl restart sshd && { success "SSH service restarted (sshd)."; return 0; }
+
+  # Pre-flight: refuse to restart if the config is invalid. A bad config
+  # would kill the current sshd and leave the new one unable to start,
+  # which is exactly the lockout we are trying to prevent.
+  if command -v sshd >/dev/null 2>&1; then
+    if ! sshd -t 2>/dev/null; then
+      warn "sshd -t FAILED — refusing to restart (would brick the listener)"
+      return 1
+    fi
   fi
-  # Last-ditch: try both, ignore failures
-  if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
-    return 0
+
+  # Layer 1: graceful restart via systemd.
+  if [[ -n "$sshd_unit" ]]; then
+    if systemctl restart "$sshd_unit" 2>/dev/null; then
+      sleep 1
+      if pgrep -f '/usr/sbin/sshd' >/dev/null 2>&1; then
+        success "SSH service restarted (${sshd_unit})."
+        return 0
+      fi
+      warn "systemctl restart ${sshd_unit} returned 0 but no sshd process — trying SIGHUP"
+    else
+      warn "systemctl restart ${sshd_unit} failed — trying SIGHUP"
+    fi
   fi
-  warn "Could not restart SSH service automatically. Please restart it manually."
+
+  # Layer 2: SIGHUP the running master (reload config without killing
+  # session children). Faster and less invasive than a full restart.
+  local master_pid
+  master_pid="$(pgrep -of '/usr/sbin/sshd' 2>/dev/null | head -1)"
+  if [[ -n "$master_pid" ]] && kill -HUP "$master_pid" 2>/dev/null; then
+    sleep 1
+    if pgrep -f '/usr/sbin/sshd' >/dev/null 2>&1; then
+      success "SSH service reloaded via SIGHUP (master pid ${master_pid})."
+      return 0
+    fi
+  fi
+
+  # Layer 3: clear systemd's failed-state memo and retry the restart.
+  # If a previous restart attempt set the unit to "failed", subsequent
+  # `systemctl restart` may return 0 without actually starting anything.
+  if [[ -n "$sshd_unit" ]]; then
+    systemctl reset-failed "$sshd_unit" 2>/dev/null || true
+    if systemctl restart "$sshd_unit" 2>/dev/null; then
+      sleep 1
+      if pgrep -f '/usr/sbin/sshd' >/dev/null 2>&1; then
+        success "SSH service restarted (${sshd_unit}) after reset-failed."
+        return 0
+      fi
+    fi
+  fi
+
+  # Layer 4: try the other unit name as a last resort.
+  for unit in ssh sshd; do
+    [[ "$unit" == "$sshd_unit" ]] && continue
+    if systemctl list-unit-files --no-legend "${unit}.service" 2>/dev/null | grep -q '\.service'; then
+      if systemctl restart "$unit" 2>/dev/null; then
+        sleep 1
+        if pgrep -f '/usr/sbin/sshd' >/dev/null 2>&1; then
+          success "SSH service restarted (${unit}, fallback)."
+          return 0
+        fi
+      fi
+    fi
+  done
+
+  warn "Could not restart SSH service automatically. Please restart it manually (e.g. 'systemctl restart ${sshd_unit:-ssh}' or reboot)."
   return 1
 }
 
