@@ -1,1 +1,17 @@
+# Claude Code transient (settings.local.json is per-user, not project content)
 .claude/settings.local.json
+.claude/worktrees/
+
+# Editor / OS debris
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local backups and patch debris from manual editing
+*.bak
+*.bak.*
+*.tmp
+*.orig
+*.rej
