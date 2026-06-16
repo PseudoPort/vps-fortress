@@ -29,7 +29,76 @@ step()    { echo -e "\n${BOLD}${GREEN}==> $*${RESET}"; }
 die()     { error "$*"; exit 1; }
 
 # -----------------------------------------------------------------------------
-# Resume functionality
+# Lock contention guard
+#
+# unattended-upgrades (Ubuntu/Debian) routinely grabs /var/lib/dpkg/lock-frontend
+# on its own timer, which would deadlock apt in step 1. We:
+#   1) suspend the service/timer for the duration of this run, and
+#   2) wait (poll) for any external holder to release the lock with a timeout.
+# Both are restored via trap EXIT so we don't leave security updates disabled
+# if the script aborts.
+# -----------------------------------------------------------------------------
+DPKG_LOCK_TIMEOUT="${DPKG_LOCK_TIMEOUT:-600}"  # seconds (10 min default)
+
+# Tracks whether we actually suspended an active unattended-upgrades
+_UU_SUSPENDED=0
+_UU_WAS_ACTIVE=0
+
+wait_for_dpkg_lock() {
+  local lock_file="/var/lib/dpkg/lock-frontend"
+  local apt_lock="/var/lib/apt/lists/lock"
+  local dpkg_lock="/var/lib/dpkg/lock"
+  local waited=0
+
+  while :; do
+    local holder=""
+    if command -v fuser &>/dev/null; then
+      holder="$(fuser "$lock_file" "$apt_lock" "$dpkg_lock" 2>/dev/null | tr -s ' ' || true)"
+    fi
+    if [[ -z "$holder" ]]; then
+      return 0
+    fi
+    if (( waited >= DPKG_LOCK_TIMEOUT )); then
+      die "Timed out after ${DPKG_LOCK_TIMEOUT}s waiting for dpkg lock. Held by PID(s): ${holder:-unknown}."
+    fi
+    if (( waited == 0 )); then
+      warn "dpkg lock held by PID(s) ${holder:-unknown} — waiting up to ${DPKG_LOCK_TIMEOUT}s..."
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+
+suspend_auto_updates() {
+  if ! command -v systemctl &>/dev/null; then
+    return 0
+  fi
+  local timer_active=false svc_active=false
+  systemctl is-active --quiet unattended-upgrades.timer 2>/dev/null && timer_active=true
+  systemctl is-active --quiet unattended-upgrades.service 2>/dev/null && svc_active=true
+  if [[ "$timer_active" == "true" || "$svc_active" == "true" ]]; then
+    _UU_WAS_ACTIVE=1
+    info "Suspending unattended-upgrades to avoid lock contention during setup..."
+    systemctl stop unattended-upgrades.service 2>/dev/null || true
+    systemctl stop unattended-upgrades.timer 2>/dev/null || true
+    _UU_SUSPENDED=1
+  fi
+}
+
+resume_auto_updates() {
+  if [[ "$_UU_SUSPENDED" != "1" ]]; then
+    return 0
+  fi
+  if [[ "$_UU_WAS_ACTIVE" == "1" ]]; then
+    info "Resuming unattended-upgrades (was active before setup)..."
+    systemctl start unattended-upgrades.timer 2>/dev/null || true
+    # Service is socket/dbus-activated; no need to start directly.
+  fi
+  _UU_SUSPENDED=0
+}
+
+# -----------------------------------------------------------------------------
+# State file for resume functionality
 # -----------------------------------------------------------------------------
 mark_step_completed() {
   local step_name="$1"
@@ -221,6 +290,7 @@ step_1_update_packages() {
   case "$PKG_MANAGER" in
     apt)
       info "Running: apt update && apt upgrade -y"
+      wait_for_dpkg_lock
       apt update && apt upgrade -y
       ;;
     dnf)
@@ -1431,6 +1501,12 @@ main() {
   # Check prerequisites first
   check_prerequisites || install_prerequisites
 
+  # Suspend unattended-upgrades for the entire run (auto-resume on EXIT).
+  # This prevents the daily timer from grabbing /var/lib/dpkg/lock-frontend
+  # in the middle of any apt call in steps 1-7.
+  suspend_auto_updates
+  trap resume_auto_updates EXIT
+
   # Step 1: Update packages (start_step=1)
   if [[ $start_step -le 1 ]] && ! skip_if_completed "step_1"; then
     step_1_update_packages
@@ -1484,6 +1560,10 @@ main() {
     step_7_auto_updates
     mark_step_completed "step_7"
   fi
+
+  # Manually resume auto-updates before the trap fires on EXIT.
+  resume_auto_updates
+  trap - EXIT
 
   print_summary
 }
